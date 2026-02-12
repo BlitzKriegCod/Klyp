@@ -1,0 +1,10 @@
+Package: ok-video-downloader
+Version: 1.0.0
+Section: net
+Priority: optional
+Architecture: amd64
+Maintainer: OK.ru Video Downloader Team
+Description: Download videos from OK.ru
+ A GUI application to download videos from OK.ru (Odnoklassniki)
+ with support for queue management, multi-threaded downloads,
+ and various quality options.
