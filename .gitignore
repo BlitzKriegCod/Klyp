@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# PyInstaller
+*.spec.bak
+installer_config.iss
+build/
+dist/
+*.manifest
+*.spec~
+
+# Application specific
+*.db
+*.sqlite
+*.sqlite3
+
+# User data and configs
+~/.config/klyp/
+downloads/
+temp/
+
+# Build artifacts
+*.deb
+*.rpm
+*.exe
+*.dmg
+*.tar.gz
+*.zip
+
+# Logs
+logs/
+*.log.*
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
+
+# OS specific
+Thumbs.db
+.DS_Store
+desktop.ini
