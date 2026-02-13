@@ -43,27 +43,27 @@ echo "Building application..."
 pyinstaller build_config.spec
 
 # Check if build was successful
-if [ -d "dist/OKVideoDownloader" ]; then
+if [ -d "dist/Klyp" ]; then
     echo ""
     echo "=========================================="
     echo "Build successful!"
-    echo "Application location: dist/OKVideoDownloader/"
+    echo "Application location: dist/Klyp/"
     echo "=========================================="
     echo ""
     echo "To run the application:"
-    echo "  cd dist/OKVideoDownloader"
-    echo "  ./OKVideoDownloader"
+    echo "  cd dist/Klyp"
+    echo "  ./Klyp"
     echo ""
     
     # Create a simple launcher script
-    cat > dist/OKVideoDownloader/run.sh << 'EOF'
+    cat > dist/Klyp/run.sh << 'EOF'
 #!/bin/bash
 cd "$(dirname "$0")"
-./OKVideoDownloader
+./Klyp
 EOF
-    chmod +x dist/OKVideoDownloader/run.sh
+    chmod +x dist/Klyp/run.sh
     
-    echo "A launcher script has been created: dist/OKVideoDownloader/run.sh"
+    echo "A launcher script has been created: dist/Klyp/run.sh"
 else
     echo ""
     echo "Build failed!"
@@ -78,34 +78,48 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "Creating .deb package..."
     
     # Create package structure
-    PKG_NAME="ok-video-downloader"
-    PKG_VERSION="1.0.0"
+    PKG_NAME="klyp"
+    PKG_VERSION="1.1.0"
     PKG_DIR="dist/${PKG_NAME}_${PKG_VERSION}"
     
     mkdir -p "${PKG_DIR}/DEBIAN"
     mkdir -p "${PKG_DIR}/usr/local/bin"
     mkdir -p "${PKG_DIR}/usr/share/applications"
+    mkdir -p "${PKG_DIR}/usr/share/pixmaps"
     mkdir -p "${PKG_DIR}/opt/${PKG_NAME}"
     
     # Copy application files
-    cp -r dist/OKVideoDownloader/* "${PKG_DIR}/opt/${PKG_NAME}/"
+    cp -r dist/Klyp/* "${PKG_DIR}/opt/${PKG_NAME}/"
+    
+    # Copy icon if it exists
+    if [ -f "assets/klyp_logo.png" ]; then
+        cp assets/klyp_logo.png "${PKG_DIR}/usr/share/pixmaps/${PKG_NAME}.png"
+        ICON_LINE="Icon=${PKG_NAME}"
+    elif [ -f "dist/Klyp/_internal/assets/klyp_logo.png" ]; then
+        cp dist/Klyp/_internal/assets/klyp_logo.png "${PKG_DIR}/usr/share/pixmaps/${PKG_NAME}.png"
+        ICON_LINE="Icon=${PKG_NAME}"
+    else
+        echo "Warning: Icon not found, .desktop entry will not have an icon"
+        ICON_LINE=""
+    fi
     
     # Create launcher script
     cat > "${PKG_DIR}/usr/local/bin/${PKG_NAME}" << EOF
 #!/bin/bash
 cd /opt/${PKG_NAME}
-./OKVideoDownloader
+./Klyp
 EOF
     chmod +x "${PKG_DIR}/usr/local/bin/${PKG_NAME}"
     
     # Create desktop entry
     cat > "${PKG_DIR}/usr/share/applications/${PKG_NAME}.desktop" << EOF
 [Desktop Entry]
-Version=1.0
+Version=1.1.0
 Type=Application
-Name=OK.ru Video Downloader
+Name=Klyp Video Downloader
 Comment=Download videos from OK.ru
 Exec=/usr/local/bin/${PKG_NAME}
+${ICON_LINE}
 Terminal=false
 Categories=Network;AudioVideo;
 EOF
@@ -117,8 +131,8 @@ Version: ${PKG_VERSION}
 Section: net
 Priority: optional
 Architecture: amd64
-Maintainer: OK.ru Video Downloader Team
-Description: Download videos from OK.ru
+Maintainer: Klyp Development Team
+Description: Klyp Video Downloader
  A GUI application to download videos from OK.ru (Odnoklassniki)
  with support for queue management, multi-threaded downloads,
  and various quality options.

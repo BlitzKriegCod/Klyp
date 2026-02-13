@@ -8,25 +8,55 @@ from ttkbootstrap.constants import *
 import tkinter as tk
 from tkinter import messagebox
 from datetime import datetime
+from utils.safe_callback_mixin import SafeCallbackMixin
+from utils.event_bus import EventBus, EventType, Event
 
 
-class HistoryScreen(ttk.Frame):
+class HistoryScreen(SafeCallbackMixin, ttk.Frame):
     """History screen with completed downloads list."""
     
-    def __init__(self, parent, app):
+    def __init__(self, parent, app, event_bus: EventBus = None):
         """
         Initialize HistoryScreen.
         
         Args:
             parent: Parent widget.
             app: Main application instance.
+            event_bus: EventBus instance for event subscriptions (optional).
         """
-        super().__init__(parent)
+        ttk.Frame.__init__(self, parent)
+        SafeCallbackMixin.__init__(self)
         self.app = app
+        self.event_bus = event_bus
+        self._subscription_ids = []
         self.history_items = []
+        
+        # Subscribe to events if event_bus is provided
+        if self.event_bus:
+            self._subscribe_to_events()
+        
         self.setup_ui()
-        # Load history after UI is set up
-        self.after(100, self.refresh_history)
+        # Load history after UI is set up using safe_after
+        self.safe_after(100, self.refresh_history)
+    
+    def _subscribe_to_events(self):
+        """Subscribe to EventBus events."""
+        # Subscribe to download complete events to update history automatically
+        sub_id = self.event_bus.subscribe(
+            EventType.DOWNLOAD_COMPLETE,
+            self._on_download_complete
+        )
+        self._subscription_ids.append(sub_id)
+    
+    def _on_download_complete(self, event: Event):
+        """
+        Handle download complete event.
+        
+        Args:
+            event: Event containing task_id and file_path
+        """
+        # Refresh history to show the newly completed download
+        self.safe_after_idle(self.refresh_history)
     
     def setup_ui(self):
         """Set up the history screen UI."""
@@ -373,3 +403,25 @@ class HistoryScreen(ttk.Frame):
         if item:
             self.history_tree.selection_set(item)
             self.context_menu.post(event.x_root, event.y_root)
+    
+    def cleanup(self):
+        """
+        Clean up resources when screen is being destroyed or switched away from.
+        
+        This method:
+        - Unsubscribes from all EventBus events
+        - Cancels all pending callbacks
+        - Clears references to help with garbage collection
+        """
+        # Unsubscribe from all events
+        if self.event_bus:
+            for sub_id in self._subscription_ids:
+                self.event_bus.unsubscribe(sub_id)
+            self._subscription_ids.clear()
+        
+        # Cancel all pending callbacks
+        self.cleanup_callbacks()
+        
+        # Clear references (helps with garbage collection)
+        self.app = None
+        self.event_bus = None

@@ -126,6 +126,98 @@ class AppLogger:
         """
         self.logger.exception(message)
     
+    def log_exception_structured(
+        self,
+        exception: Exception,
+        context: dict = None,
+        message: str = None
+    ) -> None:
+        """
+        Log exception with structured context information.
+        
+        This method logs exceptions with full context including task_id, url,
+        timestamp, exception type, and stack trace. It's designed for better
+        debugging and error tracking.
+        
+        Args:
+            exception: The exception that occurred
+            context: Dictionary with contextual information (task_id, url, etc.)
+            message: Optional custom message (defaults to exception message)
+        """
+        import traceback
+        from datetime import datetime
+        
+        context = context or {}
+        message = message or str(exception)
+        
+        # Build structured log message
+        log_parts = [
+            "=" * 80,
+            f"EXCEPTION: {exception.__class__.__name__}",
+            f"Message: {message}",
+            f"Timestamp: {datetime.now().isoformat()}",
+        ]
+        
+        # Add context information
+        if context:
+            log_parts.append("Context:")
+            for key, value in context.items():
+                log_parts.append(f"  {key}: {value}")
+        
+        # Add exception type categorization
+        exception_category = self._categorize_exception(exception)
+        log_parts.append(f"Category: {exception_category}")
+        
+        # Add stack trace
+        log_parts.append("Stack Trace:")
+        log_parts.append(traceback.format_exc())
+        log_parts.append("=" * 80)
+        
+        # Log as error with full context
+        self.logger.error("\n".join(log_parts))
+    
+    def _categorize_exception(self, exception: Exception) -> str:
+        """
+        Categorize exception by type.
+        
+        Args:
+            exception: Exception to categorize
+        
+        Returns:
+            Category string
+        """
+        from utils.exceptions import (
+            NetworkException,
+            AuthenticationException,
+            FormatException,
+            ExtractionException,
+            DownloadException,
+            ThreadSafetyViolation
+        )
+        
+        if isinstance(exception, ThreadSafetyViolation):
+            return "THREAD_SAFETY"
+        elif isinstance(exception, NetworkException):
+            return "NETWORK"
+        elif isinstance(exception, AuthenticationException):
+            return "AUTHENTICATION"
+        elif isinstance(exception, FormatException):
+            return "FORMAT"
+        elif isinstance(exception, ExtractionException):
+            return "EXTRACTION"
+        elif isinstance(exception, DownloadException):
+            return "DOWNLOAD"
+        elif isinstance(exception, (ConnectionError, TimeoutError)):
+            return "NETWORK"
+        elif isinstance(exception, PermissionError):
+            return "PERMISSION"
+        elif isinstance(exception, FileNotFoundError):
+            return "FILE_NOT_FOUND"
+        elif isinstance(exception, ValueError):
+            return "VALUE_ERROR"
+        else:
+            return "UNKNOWN"
+    
     def get_log_file_path(self) -> str:
         """
         Get the current log file path.
@@ -214,3 +306,15 @@ def critical(message: str, exc_info: bool = False) -> None:
 def exception(message: str) -> None:
     """Log exception with traceback."""
     _logger.exception(message)
+
+
+def log_exception_structured(exception: Exception, context: dict = None, message: str = None) -> None:
+    """
+    Log exception with structured context information.
+    
+    Args:
+        exception: The exception that occurred
+        context: Dictionary with contextual information (task_id, url, etc.)
+        message: Optional custom message (defaults to exception message)
+    """
+    _logger.log_exception_structured(exception, context, message)

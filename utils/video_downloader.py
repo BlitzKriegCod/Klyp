@@ -8,6 +8,14 @@ import logging
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any
 from models import VideoInfo
+from utils.exceptions import (
+    DownloadException,
+    NetworkException,
+    AuthenticationException,
+    FormatException,
+    ExtractionException,
+    classify_yt_dlp_error
+)
 
 # Try to import static_ffmpeg for portable ffmpeg binary
 try:
@@ -27,14 +35,16 @@ except (ImportError, Exception) as e:
 class VideoDownloader:
     """Handles individual video downloads using yt-dlp."""
     
-    def __init__(self, cookies_file: Optional[str] = None):
+    def __init__(self, cookies_file: Optional[str] = None, settings: Optional[Dict[str, Any]] = None):
         """
         Initialize VideoDownloader.
         
         Args:
             cookies_file: Path to cookies file for authentication.
+            settings: Dictionary of settings to cache (avoids repeated SettingsManager instantiation).
         """
         self.cookies_file = cookies_file
+        self.settings = settings or {}
         self.logger = logging.getLogger("Klyp.VideoDownloader")
     
     def extract_info(self, url: str) -> Dict[str, Any]:
@@ -48,12 +58,16 @@ class VideoDownloader:
             Dictionary containing metadata. If playlist, contains 'entries'.
         
         Raises:
-            Exception: If extraction fails.
+            ExtractionException: If extraction fails.
+            NetworkException: If network error occurs.
+            AuthenticationException: If authentication is required.
         """
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
-            'extract_flat': 'in_playlist', # Better for fast playlist extraction
+            'extract_flat': 'in_playlist',  # Better for fast playlist extraction
+            'socket_timeout': 10,  # 10 second timeout
+            'no_check_certificate': True,  # Skip SSL verification for speed
         }
         
         if self.cookies_file:
@@ -88,6 +102,10 @@ class VideoDownloader:
                                             key=lambda x: int(x[:-1]) if x[:-1].isdigit() else 0, 
                                             reverse=True)
                 
+                # If no qualities found, provide defaults
+                if not available_qualities:
+                    available_qualities = ["1080p", "720p", "480p", "360p", "Audio Only"]
+                
                 # Create VideoInfo object
                 video_info = VideoInfo(
                     url=url,
@@ -103,9 +121,22 @@ class VideoDownloader:
                     'type': 'video',
                     'video_info': video_info
                 }
+        except yt_dlp.utils.DownloadError as e:
+            error_msg = str(e)
+            self.logger.error(f"yt-dlp DownloadError during extraction: {error_msg}")
+            # Classify and re-raise as appropriate custom exception
+            exception_class = classify_yt_dlp_error(error_msg)
+            raise exception_class(f"Failed to extract info: {error_msg}") from e
+        except yt_dlp.utils.ExtractorError as e:
+            error_msg = str(e)
+            self.logger.error(f"yt-dlp ExtractorError: {error_msg}")
+            raise ExtractionException(f"Failed to extract info: {error_msg}") from e
         except Exception as e:
-            self.logger.error(f"Extraction failed: {str(e)}")
-            raise Exception(f"Failed to extract info: {str(e)}")
+            error_msg = str(e)
+            self.logger.error(f"Extraction failed: {error_msg}")
+            # Classify generic exceptions
+            exception_class = classify_yt_dlp_error(error_msg)
+            raise exception_class(f"Failed to extract info: {error_msg}") from e
     
     def check_subtitles_available(self, url: str) -> bool:
         """
@@ -185,6 +216,7 @@ class VideoDownloader:
                 'writesubtitles': True,
                 'writeautomaticsub': True,
                 'subtitlesformat': 'srt',
+                'ignoreerrors': 'only_download',  # Ignore subtitle errors, continue with video
             })
             
         # Quality selection
@@ -214,18 +246,11 @@ class VideoDownloader:
             ydl_opts['progress_hooks'] = [progress_hook]
             
         # --- Advanced Features from Settings ---
-        # Note: We need to access SettingsManager here. 
-        # Ideally passed in __init__, but for now we can instantiate it or modify DownloadManager to pass config.
-        # Since we don't have direct access to app/settings here easily without refactoring,
-        # we'll assume the VideoDownloader is initialized with these configs or we load them.
-        # Let's import SettingsManager here to load current config.
-        
-        from controllers.settings_manager import SettingsManager
-        settings = SettingsManager()
+        # Use cached settings instead of instantiating SettingsManager
         
         # Audio Extraction from settings (only if not already set by quality selection)
-        if settings.get("extract_audio", False) and video_info.selected_quality != "audio":
-            audio_format = settings.get("audio_format", "mp3")
+        if self.settings.get("extract_audio", False) and video_info.selected_quality != "audio":
+            audio_format = self.settings.get("audio_format", "mp3")
             ydl_opts['format'] = 'bestaudio/best'
             ydl_opts['postprocessors'] = [{
                 'key': 'FFmpegExtractAudio',
@@ -238,14 +263,14 @@ class VideoDownloader:
         # Post-Processing
         postprocessors = ydl_opts.get('postprocessors', [])
         
-        if settings.get("embed_thumbnail", False):
+        if self.settings.get("embed_thumbnail", False):
             ydl_opts['writethumbnail'] = True
             postprocessors.append({'key': 'EmbedThumbnail'})
             
-        if settings.get("embed_metadata", False):
+        if self.settings.get("embed_metadata", False):
             ydl_opts['addmetadata'] = True
             
-        if settings.get("sponsorblock_enabled", False):
+        if self.settings.get("sponsorblock_enabled", False):
             postprocessors.append({
                 'key': 'SponsorBlock',
                 'categories': ['sponsor', 'intro', 'outro', 'selfpromo', 'preview', 'filler', 'interaction', 'music_offtopic'],
@@ -256,9 +281,9 @@ class VideoDownloader:
             ydl_opts['postprocessors'] = postprocessors
             
         # Authentication (Cookies from settings take precedence if method arg is None, or we merge?)
-        # method arg self.cookies_file was set via set_cookies_file
+        # method arg self.cookies_file was set via constructor
         # Settings might have a path.
-        settings_cookies = settings.get("cookies_path", "")
+        settings_cookies = self.settings.get("cookies_path", "")
         if settings_cookies and Path(settings_cookies).exists():
             ydl_opts['cookiefile'] = settings_cookies
 
@@ -270,6 +295,20 @@ class VideoDownloader:
                  progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None) -> str:
         """
         Download a video.
+        
+        Args:
+            video_info: VideoInfo object containing video metadata.
+            download_path: Directory path where video will be saved.
+            progress_callback: Optional callback function for progress updates.
+        
+        Returns:
+            Path to the downloaded file.
+        
+        Raises:
+            DownloadException: If download fails.
+            NetworkException: If network error occurs.
+            AuthenticationException: If authentication is required.
+            FormatException: If format/codec error occurs.
         """
         # Ensure download directory exists
         Path(download_path).mkdir(parents=True, exist_ok=True)
@@ -287,8 +326,26 @@ class VideoDownloader:
                         if pp['key'] == 'FFmpegExtractAudio':
                             filename = str(Path(filename).with_suffix(f".{pp['preferredcodec']}"))
                 return filename
+        except yt_dlp.utils.DownloadError as e:
+            error_msg = str(e)
+            self.logger.error(f"yt-dlp DownloadError: {error_msg}")
+            # Classify and re-raise as appropriate custom exception
+            exception_class = classify_yt_dlp_error(error_msg)
+            raise exception_class(f"Failed to download video: {error_msg}") from e
+        except yt_dlp.utils.ExtractorError as e:
+            error_msg = str(e)
+            self.logger.error(f"yt-dlp ExtractorError during download: {error_msg}")
+            raise ExtractionException(f"Failed to download video: {error_msg}") from e
+        except yt_dlp.utils.PostProcessingError as e:
+            error_msg = str(e)
+            self.logger.error(f"yt-dlp PostProcessingError: {error_msg}")
+            raise FormatException(f"Post-processing failed: {error_msg}") from e
         except Exception as e:
-            raise Exception(f"Failed to download video: {str(e)}")
+            error_msg = str(e)
+            self.logger.error(f"Download failed: {error_msg}")
+            # Classify generic exceptions
+            exception_class = classify_yt_dlp_error(error_msg)
+            raise exception_class(f"Failed to download video: {error_msg}") from e
     
     def download_with_subtitles(self,
                                 video_info: VideoInfo,
@@ -296,6 +353,20 @@ class VideoDownloader:
                                 progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None) -> str:
         """
         Download a video with subtitles if available.
+        
+        Args:
+            video_info: VideoInfo object containing video metadata.
+            download_path: Directory path where video will be saved.
+            progress_callback: Optional callback function for progress updates.
+        
+        Returns:
+            Path to the downloaded file.
+        
+        Raises:
+            DownloadException: If download fails.
+            NetworkException: If network error occurs.
+            AuthenticationException: If authentication is required.
+            FormatException: If format/codec error occurs.
         """
         # Ensure download directory exists
         Path(download_path).mkdir(parents=True, exist_ok=True)
@@ -313,5 +384,40 @@ class VideoDownloader:
                         if pp['key'] == 'FFmpegExtractAudio':
                             filename = str(Path(filename).with_suffix(f".{pp['preferredcodec']}"))
                 return filename
+        except yt_dlp.utils.DownloadError as e:
+            error_msg = str(e)
+            
+            # Check if it's ONLY a subtitle error
+            if 'subtitle' in error_msg.lower() and '404' in error_msg:
+                self.logger.warning(f"Subtitle download failed, but video downloaded successfully: {error_msg}")
+                # Try to return the video filename anyway
+                try:
+                    # The video should have been downloaded despite subtitle error
+                    # Try to find the downloaded file
+                    import glob
+                    pattern = str(Path(download_path) / f"{video_info.filename}.*")
+                    files = glob.glob(pattern)
+                    if files:
+                        # Return the first matching file
+                        return files[0]
+                except Exception:
+                    pass
+            
+            self.logger.error(f"yt-dlp DownloadError: {error_msg}")
+            # Classify and re-raise as appropriate custom exception
+            exception_class = classify_yt_dlp_error(error_msg)
+            raise exception_class(f"Failed to download video with subtitles: {error_msg}") from e
+        except yt_dlp.utils.ExtractorError as e:
+            error_msg = str(e)
+            self.logger.error(f"yt-dlp ExtractorError during download: {error_msg}")
+            raise ExtractionException(f"Failed to download video with subtitles: {error_msg}") from e
+        except yt_dlp.utils.PostProcessingError as e:
+            error_msg = str(e)
+            self.logger.error(f"yt-dlp PostProcessingError: {error_msg}")
+            raise FormatException(f"Post-processing failed: {error_msg}") from e
         except Exception as e:
-            raise Exception(f"Failed to download video with subtitles: {str(e)}")
+            error_msg = str(e)
+            self.logger.error(f"Download with subtitles failed: {error_msg}")
+            # Classify generic exceptions
+            exception_class = classify_yt_dlp_error(error_msg)
+            raise exception_class(f"Failed to download video with subtitles: {error_msg}") from e

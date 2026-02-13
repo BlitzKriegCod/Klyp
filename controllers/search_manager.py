@@ -16,6 +16,10 @@ from duckduckgo_search import DDGS
 from typing import List, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from utils.thread_pool_manager import ThreadPoolManager
+from utils.event_bus import EventBus, Event, EventType
+from utils.exceptions import SearchException, NetworkException, ExtractionException
+
 # Platform Categories with visual indicators
 PLATFORM_CATEGORIES = {
     "Video Streaming": {
@@ -143,9 +147,11 @@ class SearchManager:
         self.cache_ttl = 3600  # 1 hour cache TTL in seconds
         self.trending_cache_ttl = 900  # 15 minutes in seconds
         
-        # Initialize ThreadPoolExecutor for parallel operations
-        self.executor = ThreadPoolExecutor(max_workers=5)
-        self.logger.info("SearchManager initialized with ThreadPoolExecutor (max_workers=5)")
+        # Get ThreadPoolManager and EventBus instances
+        self._thread_pool_manager = ThreadPoolManager()
+        self._event_bus = EventBus()
+        
+        self.logger.info("SearchManager initialized")
     
     def search(self, 
                query: str, 
@@ -176,7 +182,18 @@ class SearchManager:
         try:
             # Handle anime-specific search
             if content_type == "Anime":
-                return self._search_anime(query, limit, region, timelimit, duration)
+                results = self._search_anime(query, limit, region, timelimit, duration)
+                # Publish search complete event
+                self._event_bus.publish(Event(
+                    type=EventType.SEARCH_COMPLETE,
+                    data={
+                        "query": query,
+                        "results": results,
+                        "result_count": len(results),
+                        "content_type": content_type
+                    }
+                ))
+                return results
             
             # Append site operator if domain is specified
             search_query = query
@@ -214,11 +231,62 @@ class SearchManager:
                     "platform_category": platform_info["category_name"]
                 }
                 results.append(video_data)
-                
+            
+            # Publish search complete event
+            self._event_bus.publish(Event(
+                type=EventType.SEARCH_COMPLETE,
+                data={
+                    "query": query,
+                    "results": results,
+                    "result_count": len(results),
+                    "content_type": content_type
+                }
+            ))
+            
             return results
             
         except Exception as e:
-            self.logger.error(f"Search failed: {str(e)}")
+            # Log with structured context
+            self.logger.log_exception_structured(
+                exception=e,
+                context={
+                    "query": query,
+                    "content_type": content_type,
+                    "operation": "search"
+                },
+                message=f"Search failed for query: {query}"
+            )
+            
+            # Classify the error type
+            error_msg = str(e).lower()
+            error_type = "unknown"
+            
+            # Network errors
+            if any(keyword in error_msg for keyword in [
+                'network', 'connection', 'timeout', 'unreachable', 'dns', 'ssl'
+            ]):
+                error_type = "network"
+            # API errors
+            elif any(keyword in error_msg for keyword in [
+                'api', 'rate limit', 'quota', 'forbidden', '403', '429'
+            ]):
+                error_type = "api"
+            # Parsing errors
+            elif any(keyword in error_msg for keyword in [
+                'parse', 'json', 'decode', 'invalid response'
+            ]):
+                error_type = "parsing"
+            
+            # Publish search failed event with error classification
+            self._event_bus.publish(Event(
+                type=EventType.SEARCH_FAILED,
+                data={
+                    "query": query,
+                    "error": str(e),
+                    "error_type": error_type,
+                    "content_type": content_type
+                }
+            ))
             return []
     
     def search_preset(self, preset_name: str, query: str, limit: int = 50, 
@@ -739,14 +807,14 @@ class SearchManager:
             result['available_qualities'] = qualities
             return result
         
-        # Use ThreadPoolExecutor for parallel quality checks
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_result = {
-                executor.submit(check_and_filter, result): result 
-                for result in results
-            }
-            
-            for future in as_completed(future_to_result):
+        # Use ThreadPoolManager search_pool for parallel quality checks
+        executor = self._thread_pool_manager.search_pool
+        future_to_result = {
+            executor.submit(check_and_filter, result): result 
+            for result in results
+        }
+        
+        for future in as_completed(future_to_result):
                 try:
                     filtered_result = future.result()
                     if filtered_result:
@@ -793,7 +861,9 @@ class SearchManager:
                 'no_warnings': True,
                 'extract_flat': False,
                 'skip_download': True,
-                'socket_timeout': 10,  # 10 second timeout
+                'socket_timeout': 5,  # 5 second timeout (reduced from 10)
+                'no_check_certificate': True,  # Skip SSL verification for speed
+                'prefer_insecure': True,  # Use HTTP when possible for speed
             }
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -856,7 +926,17 @@ class SearchManager:
                 return result
                 
         except Exception as e:
-            self.logger.warning(f"Failed to enrich result for {url}: {e}")
+            # Log with structured context
+            self.logger.log_exception_structured(
+                exception=e,
+                context={
+                    "url": url,
+                    "title": result.get('title', 'Unknown'),
+                    "operation": "enrich_result"
+                },
+                message=f"Failed to enrich result for: {url}"
+            )
+            
             # Return partial data with enrichment_failed flag
             result['enrichment_failed'] = True
             result['view_count'] = 0
@@ -885,26 +965,38 @@ class SearchManager:
         
         enriched_results = []
         
-        self.logger.info(f"Starting batch enrichment of {len(results)} results with {max_workers} workers")
+        # Limit to first 10 results to prevent freezing
+        results_to_enrich = results[:10]
+        remaining_results = results[10:]
         
-        # Use ThreadPoolExecutor for parallel enrichment
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all enrichment tasks
-            future_to_result = {
-                executor.submit(self.enrich_result, result): result
-                for result in results
-            }
-            
-            # Collect results as they complete
-            for future in as_completed(future_to_result):
+        self.logger.info(f"Starting batch enrichment of {len(results_to_enrich)} results (limited from {len(results)}) with {max_workers} workers")
+        
+        # Use ThreadPoolManager search_pool for parallel enrichment
+        executor = self._thread_pool_manager.search_pool
+        # Submit all enrichment tasks
+        future_to_result = {
+            executor.submit(self.enrich_result, result): result
+            for result in results_to_enrich
+        }
+        
+        # Collect results as they complete with timeout
+        import concurrent.futures
+        try:
+            for future in concurrent.futures.as_completed(future_to_result, timeout=30):
                 try:
-                    enriched_result = future.result()
+                    enriched_result = future.result(timeout=5)
                     enriched_results.append(enriched_result)
                     
                     # Log progress
-                    if len(enriched_results) % 10 == 0:
-                        self.logger.info(f"Enriched {len(enriched_results)}/{len(results)} results")
+                    if len(enriched_results) % 5 == 0:
+                        self.logger.info(f"Enriched {len(enriched_results)}/{len(results_to_enrich)} results")
                         
+                except concurrent.futures.TimeoutError:
+                    # Timeout on individual result
+                    original_result = future_to_result[future]
+                    self.logger.warning(f"Timeout enriching result: {original_result.get('title', 'Unknown')}")
+                    original_result['enrichment_failed'] = True
+                    enriched_results.append(original_result)
                 except Exception as e:
                     # This should rarely happen since enrich_result handles its own exceptions
                     original_result = future_to_result[future]
@@ -913,6 +1005,18 @@ class SearchManager:
                     # Add the original result with enrichment_failed flag
                     original_result['enrichment_failed'] = True
                     enriched_results.append(original_result)
+        except concurrent.futures.TimeoutError:
+            # Overall timeout - add remaining results as failed
+            self.logger.warning(f"Overall enrichment timeout after 30s")
+            for future, original_result in future_to_result.items():
+                if not future.done():
+                    original_result['enrichment_failed'] = True
+                    enriched_results.append(original_result)
+        
+        # Add remaining results without enrichment
+        for result in remaining_results:
+            result['enrichment_failed'] = True
+            enriched_results.append(result)
         
         self.logger.info(f"Batch enrichment complete: {len(enriched_results)} results processed")
         
@@ -1293,10 +1397,60 @@ class SearchManager:
                 results.append(video_data)
             
             self.logger.info(f"Advanced search returned {len(results)} results")
+            
+            # Publish search complete event
+            self._event_bus.publish(Event(
+                type=EventType.SEARCH_COMPLETE,
+                data={
+                    "query": constructed_query,
+                    "results": results,
+                    "result_count": len(results),
+                    "advanced_search": True
+                }
+            ))
+            
             return results
             
         except Exception as e:
-            self.logger.error(f"Advanced search failed: {str(e)}")
+            # Log with structured context
+            self.logger.log_exception_structured(
+                exception=e,
+                context={
+                    "query": constructed_query,
+                    "filters": filters,
+                    "operation": "advanced_search"
+                },
+                message=f"Advanced search failed for query: {constructed_query}"
+            )
+            
+            # Classify the error type
+            error_msg = str(e).lower()
+            error_type = "unknown"
+            
+            if any(keyword in error_msg for keyword in [
+                'network', 'connection', 'timeout', 'unreachable', 'dns', 'ssl'
+            ]):
+                error_type = "network"
+            elif any(keyword in error_msg for keyword in [
+                'api', 'rate limit', 'quota', 'forbidden', '403', '429'
+            ]):
+                error_type = "api"
+            elif any(keyword in error_msg for keyword in [
+                'parse', 'json', 'decode', 'invalid response'
+            ]):
+                error_type = "parsing"
+            
+            # Publish search failed event
+            self._event_bus.publish(Event(
+                type=EventType.SEARCH_FAILED,
+                data={
+                    "query": constructed_query,
+                    "error": str(e),
+                    "error_type": error_type,
+                    "advanced_search": True
+                }
+            ))
+            
             return []
 
     def compare_platforms(self, 
@@ -1401,25 +1555,25 @@ class SearchManager:
                 self.logger.warning(f"Failed to search {platform_name}: {e}")
                 return platform_name, []
         
-        # Execute parallel searches using ThreadPoolExecutor
+        # Execute parallel searches using ThreadPoolManager search_pool
         comparison_results = {}
         
-        with ThreadPoolExecutor(max_workers=min(len(platforms), 5)) as executor:
-            # Submit all platform searches
-            future_to_platform = {
-                executor.submit(search_platform, platform): platform
-                for platform in platforms
-            }
-            
-            # Collect results as they complete
-            for future in as_completed(future_to_platform):
-                try:
-                    platform_name, results = future.result()
-                    comparison_results[platform_name] = results
-                except Exception as e:
-                    platform = future_to_platform[future]
-                    self.logger.error(f"Unexpected error searching {platform}: {e}")
-                    comparison_results[platform] = []
+        executor = self._thread_pool_manager.search_pool
+        # Submit all platform searches
+        future_to_platform = {
+            executor.submit(search_platform, platform): platform
+            for platform in platforms
+        }
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_platform):
+            try:
+                platform_name, results = future.result()
+                comparison_results[platform_name] = results
+            except Exception as e:
+                platform = future_to_platform[future]
+                self.logger.error(f"Unexpected error searching {platform}: {e}")
+                comparison_results[platform] = []
         
         # Log summary
         total_results = sum(len(results) for results in comparison_results.values())
@@ -1790,30 +1944,30 @@ class SearchManager:
                 self.logger.error(f"Unexpected error checking {platform_name}: {e}")
                 return platform_name, "unknown"
         
-        # Execute parallel health checks using ThreadPoolExecutor
+        # Execute parallel health checks using ThreadPoolManager search_pool
         health_results = {}
         
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            # Submit all platform health checks
-            future_to_platform = {
-                executor.submit(check_single_platform, platform): platform
-                for platform in all_platforms
-            }
-            
-            # Collect results as they complete
-            for future in as_completed(future_to_platform):
-                try:
-                    platform_name, status = future.result()
-                    health_results[platform_name] = status
+        executor = self._thread_pool_manager.search_pool
+        # Submit all platform health checks
+        future_to_platform = {
+            executor.submit(check_single_platform, platform): platform
+            for platform in all_platforms
+        }
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_platform):
+            try:
+                platform_name, status = future.result()
+                health_results[platform_name] = status
+                
+                # Log progress
+                if len(health_results) % 5 == 0:
+                    self.logger.info(f"Checked {len(health_results)}/{len(all_platforms)} platforms")
                     
-                    # Log progress
-                    if len(health_results) % 5 == 0:
-                        self.logger.info(f"Checked {len(health_results)}/{len(all_platforms)} platforms")
-                        
-                except Exception as e:
-                    platform = future_to_platform[future]
-                    self.logger.error(f"Unexpected error processing {platform}: {e}")
-                    health_results[platform] = "unknown"
+            except Exception as e:
+                platform = future_to_platform[future]
+                self.logger.error(f"Unexpected error processing {platform}: {e}")
+                health_results[platform] = "unknown"
         
         # Log summary
         healthy_count = sum(1 for status in health_results.values() if status == "healthy")
@@ -1897,14 +2051,15 @@ class SearchManager:
 
     def shutdown(self):
         """
-        Clean shutdown of ThreadPoolExecutor.
-        Should be called when the application is closing to ensure all threads complete.
-        """
-        self.logger.info("Shutting down SearchManager ThreadPoolExecutor")
+        Clean shutdown of search operations.
         
-        try:
-            # Shutdown the executor and wait for all threads to complete
-            self.executor.shutdown(wait=True, cancel_futures=False)
-            self.logger.info("ThreadPoolExecutor shutdown complete")
-        except Exception as e:
-            self.logger.error(f"Error during ThreadPoolExecutor shutdown: {e}")
+        This method is maintained for backward compatibility but now delegates
+        to ThreadPoolManager for actual shutdown. The ThreadPoolManager handles
+        shutdown of all thread pools centrally when the application closes.
+        
+        Note: This method is deprecated. Thread pool shutdown is now handled
+        by ThreadPoolManager.shutdown() called from the main application.
+        """
+        self.logger.info("SearchManager shutdown called (delegating to ThreadPoolManager)")
+        # ThreadPoolManager handles shutdown centrally, so this is now a no-op
+        # Kept for backward compatibility with existing code that calls this method

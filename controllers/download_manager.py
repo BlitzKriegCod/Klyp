@@ -1,50 +1,83 @@
 """
 Download Manager for Klyp Video Downloader.
 Manages download queue processing with multi-threaded and sequential modes.
+
+DEPRECATED: This class is now a wrapper around DownloadService.
+New code should use DownloadService directly for better thread-safety and architecture.
 """
 
+# Standard library imports
 import threading
+import warnings
 from typing import Optional, Callable
-from datetime import datetime
-from pathlib import Path
+
+# Local imports
 from models import DownloadTask, DownloadStatus
-from .queue_manager import QueueManager
+from .download_service import DownloadService
 from .history_manager import HistoryManager
-from utils.video_downloader import VideoDownloader
-from utils.notification_manager import NotificationManager
+from .queue_manager import QueueManager
+from utils.decorators import deprecated
 from utils.logger import get_logger
+from utils.notification_manager import NotificationManager
+from utils.video_downloader import VideoDownloader
 
 
 class DownloadManager:
-    """Manages download queue processing and status updates."""
+    """
+    Manages download queue processing and status updates.
+    
+    DEPRECATED: This class is now a wrapper around DownloadService.
+    It maintains backward compatibility but delegates all operations to DownloadService.
+    New code should use DownloadService directly.
+    """
     
     def __init__(self, queue_manager: QueueManager, history_manager: Optional[HistoryManager] = None, max_concurrent_downloads: int = 3):
         """
         Initialize DownloadManager.
         
+        DEPRECATED: Parameters queue_manager, history_manager, and max_concurrent_downloads
+        are maintained for compatibility but are no longer used internally.
+        DownloadService manages these dependencies as singletons.
+        
         Args:
-            queue_manager: QueueManager instance to manage the queue.
-            history_manager: HistoryManager instance to track completed downloads.
-            max_concurrent_downloads: Maximum number of concurrent downloads in multi-threaded mode.
+            queue_manager: QueueManager instance (deprecated, kept for compatibility)
+            history_manager: HistoryManager instance (deprecated, kept for compatibility)
+            max_concurrent_downloads: Maximum concurrent downloads (deprecated, kept for compatibility)
         """
         self.logger = get_logger()
-        self.logger.info("Initializing DownloadManager")
+        self.logger.warning(
+            "DownloadManager is deprecated. Consider using DownloadService directly. "
+            "DownloadManager now acts as a wrapper for backward compatibility."
+        )
         
+        # Get DownloadService singleton instance
+        self._download_service = DownloadService()
+        
+        # Maintain references to managers for compatibility
+        # These are kept so existing code that accesses them doesn't break
         self.queue_manager = queue_manager
         self.history_manager = history_manager or HistoryManager()
+        
+        # Deprecated parameters - kept for compatibility but not used
         self.max_concurrent_downloads = max_concurrent_downloads
+        if max_concurrent_downloads != 3:
+            self.logger.warning(
+                f"max_concurrent_downloads parameter ({max_concurrent_downloads}) is deprecated "
+                "and no longer affects behavior. ThreadPoolManager uses fixed pool size of 3."
+            )
+        
+        # Legacy fields maintained for compatibility
         self.video_downloader = VideoDownloader()
         self.notification_manager = NotificationManager()
         self.is_running = False
-        self.download_mode = "sequential"  # "sequential" or "multi-threaded"
-        self.active_downloads = {}  # task_id -> thread
-        self.stop_flags = {}  # task_id -> stop_flag
+        self.download_mode = "sequential"  # Deprecated, kept for compatibility
         self.lock = threading.Lock()
-        self.status_callback: Optional[Callable[[str, DownloadStatus, float], None]] = None
         self.completed_count = 0
         self.failed_count = 0
         self.total_count = 0
         self.pending_downloads_file: Optional[str] = None
+        
+        self.logger.info("DownloadManager initialized (wrapper mode)")
     
     def set_download_mode(self, mode: str) -> None:
         """
@@ -61,14 +94,24 @@ class DownloadManager:
         self.download_mode = mode
         self.logger.info(f"Download mode set to: {mode}")
     
+    @deprecated(replacement="EventBus.subscribe()")
     def set_status_callback(self, callback: Callable[[str, DownloadStatus, float], None]) -> None:
         """
         Set callback for status updates.
         
+        DEPRECATED: Status callbacks are deprecated. Use EventBus subscriptions instead.
+        Screens should subscribe to DOWNLOAD_PROGRESS, DOWNLOAD_COMPLETE, and DOWNLOAD_FAILED events.
+        This method is kept for backward compatibility but does nothing.
+        
         Args:
-            callback: Function to call with (task_id, status, progress) on updates.
+            callback: Function to call with (task_id, status, progress) on updates (ignored).
         """
-        self.status_callback = callback
+        warnings.warn(
+            "set_status_callback() is deprecated. Use EventBus subscriptions instead. "
+            "Subscribe to DOWNLOAD_PROGRESS, DOWNLOAD_COMPLETE, and DOWNLOAD_FAILED events.",
+            DeprecationWarning,
+            stacklevel=2
+        )
     
     def set_cookies_file(self, cookies_file: str) -> None:
         """
@@ -130,119 +173,7 @@ class DownloadManager:
         # Do it in a separate thread to avoid blocking
         if old_status != status and status in [DownloadStatus.QUEUED, DownloadStatus.DOWNLOADING, DownloadStatus.STOPPED, DownloadStatus.COMPLETED, DownloadStatus.FAILED]:
             threading.Thread(target=self.save_pending_downloads, daemon=True).start()
-        
-        if self.status_callback:
-            self.status_callback(task_id, status, progress or 0.0)
     
-    def _download_task(self, task: DownloadTask) -> None:
-        """
-        Download a single task.
-        
-        Args:
-            task: DownloadTask to download.
-        """
-        task_id = task.id
-        self.logger.info(f"Downloading task {task_id}: {task.video_info.url}")
-        
-        try:
-            # Status is already set to DOWNLOADING by the caller to prevent race conditions
-            
-            # Progress callback
-            def progress_hook(d):
-                if task_id in self.stop_flags and self.stop_flags[task_id]:
-                    self.logger.warning(f"Download stopped by user for task {task_id}")
-                    raise Exception("Download stopped by user")
-                
-                if d['status'] == 'downloading':
-                    total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-                    downloaded = d.get('downloaded_bytes', 0)
-                    
-                    if total > 0:
-                        progress = (downloaded / total) * 100
-                        self._update_task_status(task_id, DownloadStatus.DOWNLOADING, progress)
-                        # Debug: print progress occasionally
-                        if int(progress) % 10 == 0:  # Print every 10%
-                            print(f"Progress: {progress:.1f}%")
-                elif d['status'] == 'finished':
-                    self._update_task_status(task_id, DownloadStatus.DOWNLOADING, 100.0)
-                    self.logger.debug(f"Task {task_id} download finished")
-            
-            # Download the video with or without subtitles
-            if task.video_info.download_subtitles:
-                self.logger.info(f"Downloading video with subtitles for task {task_id}")
-                downloaded_file = self.video_downloader.download_with_subtitles(
-                    video_info=task.video_info,
-                    download_path=task.download_path,
-                    progress_callback=progress_hook
-                )
-            else:
-                self.logger.info(f"Downloading video for task {task_id}")
-                downloaded_file = self.video_downloader.download(
-                    video_info=task.video_info,
-                    download_path=task.download_path,
-                    progress_callback=progress_hook
-                )
-            
-            # Update status to completed
-            task.completed_at = datetime.now()
-            self._update_task_status(task_id, DownloadStatus.COMPLETED, 100.0)
-            self.logger.info(f"Task {task_id} completed successfully: {downloaded_file}")
-            
-            # Print success message to console
-            print(f"\n✅ DOWNLOAD COMPLETE: {task.video_info.title}")
-            print(f"   Saved to: {downloaded_file}\n")
-            
-            # Add to history
-            try:
-                file_path = Path(downloaded_file)
-                file_size = file_path.stat().st_size if file_path.exists() else 0
-                
-                self.history_manager.add_download(
-                    title=task.video_info.title,
-                    url=task.video_info.url,
-                    file_path=str(downloaded_file),
-                    file_size=file_size,
-                    platform=self._extract_platform(task.video_info.url),
-                    quality=task.video_info.selected_quality or "best",
-                    duration=task.video_info.duration
-                )
-                self.logger.info(f"Added to history: {task.video_info.title}")
-            except Exception as e:
-                self.logger.error(f"Failed to add to history: {e}")
-            
-            # Send notification for completed download
-            self.notification_manager.notify_download_complete(
-                video_title=task.video_info.title,
-                filename=task.video_info.filename or "video"
-            )
-            
-            with self.lock:
-                self.completed_count += 1
-            
-        except Exception as e:
-            error_msg = str(e)
-            if "stopped by user" in error_msg.lower():
-                self.logger.warning(f"Task {task_id} stopped by user")
-                self._update_task_status(task_id, DownloadStatus.STOPPED, error_message="Stopped by user")
-            else:
-                self.logger.error(f"Task {task_id} failed: {error_msg}", exc_info=True)
-                self._update_task_status(task_id, DownloadStatus.FAILED, error_message=error_msg)
-                
-                # Send notification for failed download
-                self.notification_manager.notify_download_failed(
-                    video_title=task.video_info.title,
-                    error_message=error_msg[:100]  # Limit error message length
-                )
-                
-                with self.lock:
-                    self.failed_count += 1
-        finally:
-            with self.lock:
-                if task_id in self.active_downloads:
-                    del self.active_downloads[task_id]
-                if task_id in self.stop_flags:
-                    del self.stop_flags[task_id]
-                    
     def fetch_metadata(self, task_id: str) -> None:
         """
         Fetch metadata for a task in the background.
@@ -267,27 +198,35 @@ class DownloadManager:
                 # Update task with new info
                 self.queue_manager.update_task_info(task_id, video_info)
                 self.logger.info(f"Metadata updated for task {task_id}: {video_info.title}")
-                
-                # Notify UI via callback (using a special status or just trigger refresh)
-                # We can reuse the status callback to trigger a refresh without changing status
-                if self.status_callback:
-                    self.status_callback(task_id, task.status, task.progress)
                     
             except Exception as e:
                 self.logger.error(f"Failed to fetch metadata for task {task_id}: {str(e)}")
         
         threading.Thread(target=_fetch_worker, daemon=True).start()
     
+    @deprecated(replacement="DownloadService.start_all_downloads()")
     def start_downloads(self) -> None:
-        """Start processing the download queue based on the current mode."""
+        """
+        Start processing the download queue.
+        
+        DEPRECATED: This method now delegates to DownloadService.start_all_downloads().
+        The download_mode parameter is ignored as DownloadService always uses
+        multi-threaded mode with ThreadPoolManager.
+        """
+        warnings.warn(
+            "DownloadManager.start_downloads() is deprecated. Use DownloadService.start_all_downloads() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        
         if self.is_running:
             self.logger.warning("Downloads already running")
             return
         
         self.is_running = True
-        self.logger.info("Starting download processing")
+        self.logger.info("Starting download processing (delegating to DownloadService)")
         
-        # Reset counters
+        # Reset counters for compatibility
         with self.lock:
             self.completed_count = 0
             self.failed_count = 0
@@ -295,132 +234,37 @@ class DownloadManager:
         
         self.logger.info(f"Total queued tasks: {self.total_count}")
         
-        if self.download_mode == "sequential":
-            self.logger.info("Using sequential download mode")
-            self._start_sequential_downloads()
-        else:
-            self.logger.info(f"Using multi-threaded download mode (max {self.max_concurrent_downloads} concurrent)")
-            self._start_multithreaded_downloads()
+        # Delegate to DownloadService
+        started_count = self._download_service.start_all_downloads()
+        self.logger.info(f"DownloadService started {started_count} download(s)")
     
-    def _start_sequential_downloads(self) -> None:
-        """Start sequential download processing."""
-        def process_queue():
-            while self.is_running:
-                # Use lock to safely get next task
-                with self.lock:
-                    queued_tasks = self.queue_manager.get_tasks_by_status(DownloadStatus.QUEUED)
-                    
-                    if not queued_tasks:
-                        self.is_running = False
-                        self._send_summary_notification()
-                        break
-                    
-                    task = queued_tasks[0]
-                    self.stop_flags[task.id] = False
-                    # Mark as DOWNLOADING immediately to prevent re-selection
-                    self._update_task_status(task.id, DownloadStatus.DOWNLOADING, 0.0)
-                
-                # Download task outside of lock
-                self.logger.info(f"Processing sequential task {task.id}: {task.video_info.url}")
-                self._download_task(task)
-        
-        thread = threading.Thread(target=process_queue, daemon=True)
-        thread.start()
-
-    def _start_multithreaded_downloads(self) -> None:
-        """Start multi-threaded download processing."""
-        def process_queue():
-            while self.is_running:
-                task_to_start = None
-                
-                with self.lock:
-                    active_count = len(self.active_downloads)
-                
-                    if active_count < self.max_concurrent_downloads:
-                        # Get all queued tasks
-                        queued_tasks = self.queue_manager.get_tasks_by_status(DownloadStatus.QUEUED)
-                        
-                        if not queued_tasks:
-                            # Check if any downloads are still active
-                            if active_count == 0:
-                                self.is_running = False
-                                self._send_summary_notification()
-                                break
-                        else:
-                            # Pick the first task that isn't already active
-                            for task in queued_tasks:
-                                if task.id not in self.active_downloads:
-                                    task_to_start = task
-                                    break
-                            
-                            if task_to_start:
-                                self.stop_flags[task_to_start.id] = False
-                                # Mark as DOWNLOADING immediately to prevent re-selection in next loop iteration
-                                self._update_task_status(task_to_start.id, DownloadStatus.DOWNLOADING, 0.0)
-                                
-                                # Start download in a new thread
-                                download_thread = threading.Thread(
-                                    target=self._download_task,
-                                    args=(task_to_start,),
-                                    daemon=True
-                                )
-                                self.active_downloads[task_to_start.id] = download_thread
-                                download_thread.start()
-                                self.logger.info(f"Started thread for task {task_to_start.id}")
-                
-                # Small delay to prevent busy waiting and allow threads to update
-                threading.Event().wait(0.5)
-        
-        thread = threading.Thread(target=process_queue, daemon=True)
-        thread.start()
-    
-    def _send_summary_notification(self) -> None:
-        """Send summary notification when all downloads complete."""
-        with self.lock:
-            total = self.total_count
-            completed = self.completed_count
-            failed = self.failed_count
-        
-        if total > 0:
-            self.notification_manager.notify_all_downloads_complete(
-                total_count=total,
-                successful_count=completed,
-                failed_count=failed
-            )
-        
-        # Save pending downloads after all complete
-        self.save_pending_downloads()
-    
-    def stop_download(self, task_id: str) -> bool:
-        """
-        Stop a specific download.
-        
-        Args:
-            task_id: ID of the task to stop.
-        
-        Returns:
-            True if stop signal was sent, False if task not found.
-        """
-        with self.lock:
-            if task_id in self.stop_flags:
-                self.stop_flags[task_id] = True
-                return True
-        return False
-    
+    @deprecated(replacement="DownloadService.stop_all_downloads()")
     def stop_all_downloads(self) -> None:
-        """Stop all active downloads."""
-        self.is_running = False
-        self.logger.info("Stopping all downloads")
+        """
+        Stop all active downloads.
         
-        with self.lock:
-            for task_id in list(self.active_downloads.keys()):
-                self.stop_flags[task_id] = True
+        DEPRECATED: This method now delegates to DownloadService.stop_all_downloads().
+        """
+        warnings.warn(
+            "DownloadManager.stop_all_downloads() is deprecated. Use DownloadService.stop_all_downloads() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        
+        self.is_running = False
+        self.logger.info("Stopping all downloads (delegating to DownloadService)")
+        
+        # Delegate to DownloadService
+        self._download_service.stop_all_downloads()
         
         self.logger.info("All downloads stopped")
             
+    @deprecated(replacement="DownloadService.stop_download()")
     def stop_task(self, task_id: str) -> bool:
         """
         Stop a specific download task.
+        
+        DEPRECATED: This method now delegates to DownloadService.stop_download().
         
         Args:
             task_id: ID of the task to stop.
@@ -428,24 +272,35 @@ class DownloadManager:
         Returns:
             True if task was stopped or already stopped, False if not found.
         """
+        warnings.warn(
+            "DownloadManager.stop_task() is deprecated. Use DownloadService.stop_download() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        
         task = self.queue_manager.get_task(task_id)
         if not task:
+            self.logger.warning(f"Task {task_id} not found")
             return False
-            
+        
         if task.status == DownloadStatus.DOWNLOADING:
-            self.logger.info(f"Stopping task {task_id}")
-            self.stop_flags[task_id] = True
-            return True
+            # Delegate to DownloadService
+            self.logger.info(f"Stopping task {task_id} (delegating to DownloadService)")
+            return self._download_service.stop_download(task_id)
         elif task.status == DownloadStatus.QUEUED:
-            # If it hasn't started yet, just mark as stopped/paused
+            # If it hasn't started yet, just mark as stopped
+            self.logger.info(f"Marking queued task {task_id} as stopped")
             self._update_task_status(task_id, DownloadStatus.STOPPED, error_message="Paused by user")
             return True
-            
+        
         return False
         
+    @deprecated(replacement="DownloadService.start_download()")
     def start_task(self, task_id: str) -> bool:
         """
         Start a specific download task.
+        
+        DEPRECATED: This method now delegates to DownloadService.start_download().
         
         Args:
             task_id: ID of the task to start.
@@ -453,46 +308,61 @@ class DownloadManager:
         Returns:
             True if task was started or queued, False if not found.
         """
+        warnings.warn(
+            "DownloadManager.start_task() is deprecated. Use DownloadService.start_download() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        
         task = self.queue_manager.get_task(task_id)
         if not task:
+            self.logger.warning(f"Task {task_id} not found")
             return False
-            
-        if task.status == DownloadStatus.DOWNLOADING:
-            # Already downloading
-            return True
-            
-        # Reset task to queued
-        self.logger.info(f"Restarting/Queuing task {task_id}")
-        self._update_task_status(task_id, DownloadStatus.QUEUED, 0.0)
         
-        # If downloads are not running, start them
-        if not self.is_running:
-            self.start_downloads()
-        else:
-            # If downloads are running, the task will be picked up automatically
-            # For multi-threaded mode, we might need to trigger a new worker
-            if self.download_mode == "multi-threaded":
-                # Check if we can start a new worker
-                with self.lock:
-                    if len(self.active_downloads) < self.max_concurrent_downloads:
-                        # Start a worker for this task
-                        threading.Thread(target=self._download_worker, daemon=True).start()
-            
-        return True
+        # If task is already downloading, return True
+        if task.status == DownloadStatus.DOWNLOADING:
+            self.logger.info(f"Task {task_id} is already downloading")
+            return True
+        
+        # Reset task to queued if it's not already
+        if task.status != DownloadStatus.QUEUED:
+            self.logger.info(f"Resetting task {task_id} to QUEUED status")
+            self._update_task_status(task_id, DownloadStatus.QUEUED, 0.0)
+        
+        # Delegate to DownloadService
+        self.logger.info(f"Starting task {task_id} (delegating to DownloadService)")
+        success = self._download_service.start_download(task_id)
+        
+        if success:
+            # Update is_running flag for compatibility
+            self.is_running = True
+        
+        return success
     
+    @deprecated(replacement="DownloadService.get_active_count()")
     def get_active_download_count(self) -> int:
         """
         Get the number of currently active downloads.
         
+        DEPRECATED: This method now delegates to DownloadService.get_active_count().
+        
         Returns:
             Number of active downloads.
         """
-        with self.lock:
-            return len(self.active_downloads)
+        warnings.warn(
+            "DownloadManager.get_active_download_count() is deprecated. Use DownloadService.get_active_count() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return self._download_service.get_active_count()
     
+    @deprecated(replacement="QueueManager.get_task()")
     def is_task_downloading(self, task_id: str) -> bool:
         """
         Check if a task is currently downloading.
+        
+        DEPRECATED: This method checks the task status from QueueManager.
+        Use QueueManager.get_task() and check status directly instead.
         
         Args:
             task_id: Task ID to check.
@@ -500,32 +370,12 @@ class DownloadManager:
         Returns:
             True if task is downloading, False otherwise.
         """
-        with self.lock:
-            return task_id in self.active_downloads
-
-    def _extract_platform(self, url: str) -> str:
-        """
-        Extract platform name from URL.
-        
-        Args:
-            url: Video URL
-            
-        Returns:
-            Platform name
-        """
-        url_lower = url.lower()
-        
-        if 'youtube.com' in url_lower or 'youtu.be' in url_lower:
-            return "YouTube"
-        elif 'vimeo.com' in url_lower:
-            return "Vimeo"
-        elif 'dailymotion.com' in url_lower:
-            return "Dailymotion"
-        elif 'ok.ru' in url_lower:
-            return "OK.ru"
-        elif 'soundcloud.com' in url_lower:
-            return "SoundCloud"
-        elif 'twitch.tv' in url_lower:
-            return "Twitch"
-        else:
-            return "Other"
+        warnings.warn(
+            "DownloadManager.is_task_downloading() is deprecated. Use QueueManager.get_task() and check status instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        task = self.queue_manager.get_task(task_id)
+        if task:
+            return task.status == DownloadStatus.DOWNLOADING
+        return False

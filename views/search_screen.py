@@ -3,44 +3,55 @@ Search Screen for Klyp Video Downloader.
 Provides video search functionality.
 """
 
+# Standard library imports
+import logging
+import threading
+import tkinter as tk
+from tkinter import messagebox
 
+# Third-party imports
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
-from tkinter import messagebox
-import threading
-import logging
-from models import VideoInfo, DownloadStatus
+
+# Local imports
 from controllers.search_manager import SearchManager
-from utils.quality_dialog import QualityDialog
-from utils.series_dialog import SeriesDetectionDialog
-from utils.metadata_tooltip import MetadataTooltip
+from models import VideoInfo, DownloadStatus
 from utils.advanced_search_panel import AdvancedSearchPanel
 from utils.batch_compare_dialog import BatchCompareDialog
+from utils.event_bus import EventBus, Event, EventType
+from utils.metadata_tooltip import MetadataTooltip
 from utils.platform_health_indicator import PlatformHealthIndicator
+from utils.quality_dialog import QualityDialog
+from utils.safe_callback_mixin import SafeCallbackMixin
+from utils.series_dialog import SeriesDetectionDialog
 
 
-class SearchScreen(ttk.Frame):
+class SearchScreen(SafeCallbackMixin, ttk.Frame):
     """Search screen with search input and results display."""
     
-    def __init__(self, parent, app):
+    def __init__(self, parent, app, event_bus: EventBus = None):
         """
         Initialize SearchScreen.
         
         Args:
             parent: Parent widget.
             app: Main application instance.
+            event_bus: EventBus instance for event subscriptions (optional).
         """
-        super().__init__(parent)
+        ttk.Frame.__init__(self, parent)
+        SafeCallbackMixin.__init__(self)
         self.app = app
+        self.event_bus = event_bus
         self.search_manager = SearchManager()
         self.search_results = []
         self.logger = logging.getLogger("Klyp.SearchScreen")
         self.expanded_items = {}  # Track expanded items and their metadata tooltips
-        self.enrichment_enabled = True  # Enable metadata enrichment by default
+        self.enrichment_enabled = False  # DISABLED by default to prevent freezing
         self.advanced_search_visible = False  # Track advanced search panel visibility
         self.advanced_panel = None  # Will hold the AdvancedSearchPanel instance
         self.trending_cache = {}  # Cache for trending results
         self.trending_cache_ttl = 900  # 15 minutes in seconds
+        self._subscription_ids = []  # Track event subscriptions for cleanup
         self.setup_ui()
     
     def setup_ui(self):
@@ -185,6 +196,64 @@ class SearchScreen(ttk.Frame):
             foreground="#888888"
         )
         self.status_label.pack(pady=(10, 0))
+        
+        # Subscribe to search events if EventBus is available
+        self._subscribe_to_events()
+    
+    def _subscribe_to_events(self):
+        """Subscribe to relevant events from the EventBus."""
+        # Use event_bus passed to constructor
+        if self.event_bus:
+            # Subscribe to SEARCH_COMPLETE
+            sub_id = self.event_bus.subscribe(EventType.SEARCH_COMPLETE, self._on_search_complete_event)
+            self._subscription_ids.append(sub_id)
+            self.logger.debug(f"Subscribed to SEARCH_COMPLETE with ID {sub_id}")
+            
+            # Subscribe to SEARCH_FAILED
+            sub_id = self.event_bus.subscribe(EventType.SEARCH_FAILED, self._on_search_failed_event)
+            self._subscription_ids.append(sub_id)
+            self.logger.debug(f"Subscribed to SEARCH_FAILED with ID {sub_id}")
+        else:
+            self.logger.warning("EventBus not available, skipping event subscriptions")
+    
+    def _on_search_complete_event(self, event: Event):
+        """Handle SEARCH_COMPLETE event from EventBus."""
+        try:
+            query = event.data.get('query', '')
+            results = event.data.get('results', [])
+            
+            self.logger.info(f"Received SEARCH_COMPLETE event for query: {query}")
+            # Update UI with search results
+            self.display_results(results)
+            self.status_label.config(
+                text=f"Search complete: {len(results)} result(s) found",
+                foreground="#10b981"
+            )
+        except tk.TclError as e:
+            # Widget was destroyed - ignore
+            self.logger.debug(f"TclError in _on_search_complete_event: {e}")
+        except Exception as e:
+            # Log other errors but don't crash
+            self.logger.error(f"Error in _on_search_complete_event: {e}", exc_info=True)
+    
+    def _on_search_failed_event(self, event: Event):
+        """Handle SEARCH_FAILED event from EventBus."""
+        try:
+            query = event.data.get('query', '')
+            error = event.data.get('error', 'Unknown error')
+            
+            self.logger.error(f"Received SEARCH_FAILED event for query: {query}, error: {error}")
+            # Update UI with error
+            self.status_label.config(
+                text=f"Search failed: {error}",
+                foreground="#ef4444"
+            )
+        except tk.TclError as e:
+            # Widget was destroyed - ignore
+            self.logger.debug(f"TclError in _on_search_failed_event: {e}")
+        except Exception as e:
+            # Log other errors but don't crash
+            self.logger.error(f"Error in _on_search_failed_event: {e}", exc_info=True)
     
     def toggle_advanced_search(self):
         """Toggle the visibility of the advanced search panel."""
@@ -451,18 +520,36 @@ class SearchScreen(ttk.Frame):
     def _preset_search_worker(self, preset_name, query):
         """Background worker for preset search."""
         try:
+            # Check if widget is still alive before starting
+            if self.is_destroyed():
+                self.logger.debug("Widget destroyed, skipping preset search")
+                return
+            
             results = self.search_manager.search_preset(
                 preset_name=preset_name,
                 query=query,
                 limit=50,
                 region=self.region_var.get()
             )
-            self.after(0, lambda r=results: self._on_search_complete(r))
+            
+            # Check again before scheduling callback
+            if self.is_destroyed():
+                self.logger.debug("Widget destroyed during preset search, skipping callback")
+                return
+            
+            self.safe_after(0, lambda r=results: self._on_search_complete(r))
         except Exception as e:
-            self.after(0, lambda err=e: self._on_search_error(str(err)))
+            # Check if widget is still alive before scheduling error callback
+            if not self.is_destroyed():
+                self.safe_after(0, lambda err=e: self._on_search_error(str(err)))
     def _perform_search_thread(self, query, region, timelimit, duration, site, content_type, min_quality=None, format_type=None, use_advanced=False, operators_config=None):
         """Perform search in background thread."""
         try:
+            # Check if widget is still alive before starting
+            if self.is_destroyed():
+                self.logger.debug("Widget destroyed, skipping search")
+                return
+            
             # Use advanced search if operators are configured
             if use_advanced and operators_config:
                 results = self.search_manager.search_advanced(
@@ -501,120 +588,192 @@ class SearchScreen(ttk.Frame):
                     site=site,
                     content_type=content_type
                 )
+            
+            # Check again before scheduling callback
+            if self.is_destroyed():
+                self.logger.debug("Widget destroyed during search, skipping callback")
+                return
+            
             # Schedule UI update on main thread
-            self.after(0, lambda r=results, q=query: self._on_search_complete(r, q))
+            self.safe_after(0, lambda r=results, q=query: self._on_search_complete(r, q))
         except Exception as e:
-            self.after(0, lambda err=e: self._on_search_error(str(err)))
+            # Check if widget is still alive before scheduling error callback
+            if not self.is_destroyed():
+                self.safe_after(0, lambda err=e: self._on_search_error(str(err)))
             
     def _on_search_complete(self, results, query=None):
         """Handle search completion on main thread."""
-        self.search_button.config(state="normal")
-        self.search_entry.config(state="normal")
-        self.display_results(results)
-        
-        # Start metadata enrichment in background if enabled
-        if self.enrichment_enabled and results:
-            self.status_label.config(
-                text=f"Found {len(results)} result(s). Enriching metadata...",
-                foreground="#10b981"
-            )
-            # Show progress bar for enrichment
-            self.show_progress(f"Enriching metadata for {len(results)} results...")
+        try:
+            self.search_button.config(state="normal")
+            self.search_entry.config(state="normal")
+            self.display_results(results)
             
-            threading.Thread(
-                target=self._enrich_results_thread,
-                args=(results,),
-                daemon=True
-            ).start()
-        
-        # Check for series detection if query is provided
-        if query:
-            self._check_series_detection(query, results)
+            # ENRICHMENT DISABLED BY DEFAULT - it causes freezing
+            # Users can enable it in settings if they want metadata
+            if self.enrichment_enabled and results:
+                self.logger.info("Metadata enrichment is enabled, starting background enrichment")
+                self.status_label.config(
+                    text=f"Found {len(results)} result(s). Enriching metadata...",
+                    foreground="#10b981"
+                )
+                # Show progress bar for enrichment
+                self.show_progress(f"Enriching metadata for {len(results)} results...")
+                
+                threading.Thread(
+                    target=self._enrich_results_thread,
+                    args=(results,),
+                    daemon=True
+                ).start()
+            else:
+                # Just show results count without enrichment
+                self.status_label.config(
+                    text=f"Found {len(results)} result(s)",
+                    foreground="#10b981"
+                )
+            
+            # Check for series detection if query is provided
+            if query:
+                self._check_series_detection(query, results)
+        except tk.TclError as e:
+            # Widget was destroyed - ignore
+            self.logger.debug(f"TclError in _on_search_complete: {e}")
+        except Exception as e:
+            # Log other errors but don't crash
+            self.logger.error(f"Error in _on_search_complete: {e}", exc_info=True)
         
     def _on_search_error(self, error_msg):
         """Handle search error on main thread."""
-        self.search_button.config(state="normal")
-        self.search_entry.config(state="normal")
-        self.status_label.config(text=f"Error: {error_msg}", foreground="#ef4444")
-        messagebox.showerror("Search Error", f"Search failed: {error_msg}")
+        try:
+            self.search_button.config(state="normal")
+            self.search_entry.config(state="normal")
+            self.status_label.config(text=f"Error: {error_msg}", foreground="#ef4444")
+            messagebox.showerror("Search Error", f"Search failed: {error_msg}")
+        except tk.TclError as e:
+            # Widget was destroyed - ignore
+            self.logger.debug(f"TclError in _on_search_error: {e}")
+        except Exception as e:
+            # Log other errors but don't crash
+            self.logger.error(f"Error in _on_search_error: {e}", exc_info=True)
     
     def _enrich_results_thread(self, results):
         """Enrich search results with metadata in background thread."""
         try:
+            # Check if widget is still alive before starting
+            if self.is_destroyed():
+                self.logger.debug("Widget destroyed, skipping enrichment")
+                return
+            
             enriched_results = self.search_manager.enrich_results_batch(results, max_workers=5)
             
+            # Check again before scheduling callback
+            if self.is_destroyed():
+                self.logger.debug("Widget destroyed during enrichment, skipping callback")
+                return
+            
             # Update search_results with enriched data
-            self.after(0, lambda r=enriched_results: self._on_enrichment_complete(r))
+            self.safe_after(0, lambda r=enriched_results: self._on_enrichment_complete(r))
         except Exception as e:
             self.logger.error(f"Enrichment failed: {e}")
-            self.after(0, lambda: self._on_enrichment_error(str(e)))
+            # Check if widget is still alive before scheduling error callback
+            if not self.is_destroyed():
+                self.safe_after(0, lambda: self._on_enrichment_error(str(e)))
     
     def _on_enrichment_complete(self, enriched_results):
         """Handle enrichment completion on main thread."""
-        # Hide progress bar
-        self.hide_progress()
-        
-        # Update search_results with enriched data
-        self.search_results = enriched_results
-        
-        # Count successful enrichments
-        successful = sum(1 for r in enriched_results if not r.get('enrichment_failed', True))
-        
-        self.status_label.config(
-            text=f"Found {len(enriched_results)} result(s). Metadata enriched for {successful} videos.",
-            foreground="#10b981"
-        )
-        
-        # Auto-hide status after 5 seconds
-        self.after(5000, lambda: self.status_label.config(
-            text="Enter a search query to find videos",
-            foreground="#888888"
-        ))
+        try:
+            # Hide progress bar
+            self.hide_progress()
+            
+            # Update search_results with enriched data
+            self.search_results = enriched_results
+            
+            # Count successful enrichments
+            successful = sum(1 for r in enriched_results if not r.get('enrichment_failed', True))
+            
+            self.status_label.config(
+                text=f"Found {len(enriched_results)} result(s). Metadata enriched for {successful} videos.",
+                foreground="#10b981"
+            )
+            
+            # Auto-hide status after 5 seconds
+            self.safe_after(5000, lambda: self._safe_update_status(
+                "Enter a search query to find videos",
+                "#888888"
+            ))
+        except tk.TclError as e:
+            # Widget was destroyed - ignore
+            self.logger.debug(f"TclError in _on_enrichment_complete: {e}")
+        except Exception as e:
+            # Log other errors but don't crash
+            self.logger.error(f"Error in _on_enrichment_complete: {e}", exc_info=True)
     
     def _on_enrichment_error(self, error_msg):
         """Handle enrichment error on main thread."""
-        # Hide progress bar
-        self.hide_progress()
-        
-        self.logger.warning(f"Enrichment error: {error_msg}")
-        self.status_label.config(
-            text=f"Search complete. Metadata enrichment failed.",
-            foreground="#f59e0b"
-        )
+        try:
+            # Hide progress bar
+            self.hide_progress()
+            
+            self.logger.warning(f"Enrichment error: {error_msg}")
+            self.status_label.config(
+                text=f"Search complete. Metadata enrichment failed.",
+                foreground="#f59e0b"
+            )
+        except tk.TclError as e:
+            # Widget was destroyed - ignore
+            self.logger.debug(f"TclError in _on_enrichment_error: {e}")
+        except Exception as e:
+            # Log other errors but don't crash
+            self.logger.error(f"Error in _on_enrichment_error: {e}", exc_info=True)
     
     def _on_tree_click(self, event):
         """Handle click on tree item to expand/collapse metadata."""
-        # Identify which column was clicked
-        region = self.results_tree.identify_region(event.x, event.y)
-        
-        if region != "cell":
-            return
-        
-        column = self.results_tree.identify_column(event.x)
-        item = self.results_tree.identify_row(event.y)
-        
-        if not item:
-            return
-        
-        # Check if expand column was clicked (column #1)
-        if column == "#1":  # expand column
-            self._toggle_metadata(item)
+        try:
+            # Identify which column was clicked
+            region = self.results_tree.identify_region(event.x, event.y)
+            
+            if region != "cell":
+                return
+            
+            column = self.results_tree.identify_column(event.x)
+            item = self.results_tree.identify_row(event.y)
+            
+            if not item:
+                return
+            
+            # Check if expand column was clicked (column #1)
+            if column == "#1":  # expand column
+                self._toggle_metadata(item)
+        except tk.TclError as e:
+            # Widget was destroyed or invalid - ignore
+            self.logger.debug(f"TclError in _on_tree_click: {e}")
+        except Exception as e:
+            # Log other errors but don't crash
+            self.logger.error(f"Error in _on_tree_click: {e}", exc_info=True)
     
     def _toggle_metadata(self, item_id):
         """Toggle metadata display for a result item."""
-        if item_id in self.expanded_items:
-            # Collapse: remove metadata tooltip
-            tooltip_frame = self.expanded_items[item_id]
-            self.results_tree.delete(tooltip_frame)
-            del self.expanded_items[item_id]
-            
-            # Update expand indicator
-            values = list(self.results_tree.item(item_id, "values"))
-            values[0] = "▶"
-            self.results_tree.item(item_id, values=values)
-        else:
-            # Expand: show metadata tooltip
-            self._show_metadata_for_item(item_id)
+        try:
+            if item_id in self.expanded_items:
+                # Collapse: remove metadata tooltip
+                tooltip_frame = self.expanded_items[item_id]
+                if self.results_tree.exists(tooltip_frame):
+                    self.results_tree.delete(tooltip_frame)
+                del self.expanded_items[item_id]
+                
+                # Update expand indicator
+                if self.results_tree.exists(item_id):
+                    values = list(self.results_tree.item(item_id, "values"))
+                    values[0] = "▶"
+                    self.results_tree.item(item_id, values=values)
+            else:
+                # Expand: show metadata tooltip
+                self._show_metadata_for_item(item_id)
+        except tk.TclError as e:
+            # Widget was destroyed or invalid - ignore
+            self.logger.debug(f"TclError in _toggle_metadata: {e}")
+        except Exception as e:
+            # Log other errors but don't crash
+            self.logger.error(f"Error in _toggle_metadata: {e}", exc_info=True)
     
     def _show_metadata_for_item(self, item_id):
         """Show metadata tooltip for a result item."""
@@ -765,6 +924,11 @@ class SearchScreen(ttk.Frame):
     def _search_episodes_thread(self, base_query, region, site, series_info):
         """Search for episodes in background thread."""
         try:
+            # Check if widget is still alive before starting
+            if self.is_destroyed():
+                self.logger.debug("Widget destroyed, skipping episode search")
+                return
+            
             episodes = self.search_manager.find_all_episodes(
                 base_query=base_query,
                 max_episodes=24,
@@ -772,12 +936,19 @@ class SearchScreen(ttk.Frame):
                 site=site
             )
             
+            # Check again before scheduling callback
+            if self.is_destroyed():
+                self.logger.debug("Widget destroyed during episode search, skipping callback")
+                return
+            
             if episodes:
-                self.after(0, lambda eps=episodes, bq=base_query: self._show_series_dialog(eps, bq))
+                self.safe_after(0, lambda eps=episodes, bq=base_query: self._show_series_dialog(eps, bq))
             else:
-                self.after(0, lambda: self._on_no_episodes_found())
+                self.safe_after(0, lambda: self._on_no_episodes_found())
         except Exception as e:
-            self.after(0, lambda err=e: self._on_search_error(str(err)))
+            # Check if widget is still alive before scheduling error callback
+            if not self.is_destroyed():
+                self.safe_after(0, lambda err=e: self._on_search_error(str(err)))
     
     def _show_series_dialog(self, episodes, base_query):
         """Show series detection dialog with found episodes."""
@@ -880,7 +1051,7 @@ class SearchScreen(ttk.Frame):
             msg += f" ({duplicate_count} duplicate(s) skipped)"
         
         self.status_label.config(text=msg, foreground="#10b981")
-        self.after(5000, lambda: self.status_label.config(
+        self.safe_after(5000, lambda: self.status_label.config(
             text="Enter a search query to find videos",
             foreground="#888888"
         ))
@@ -892,55 +1063,62 @@ class SearchScreen(ttk.Frame):
         Args:
             results: List of video result dictionaries.
         """
-        self.search_results = results
-        self.expanded_items = {}  # Clear expanded items
-        
-        # Add results to treeview
-        for idx, result in enumerate(results, 1):
-            title = result.get("title", "Unknown")
-            author = result.get("author", "Unknown")
-            duration = result.get("duration", "Unknown")
-            platform = result.get("platform", "Unknown")
-            url = result.get("url", "")
+        try:
+            self.search_results = results
+            self.expanded_items = {}  # Clear expanded items
             
-            # Detect if URL might be a playlist
-            is_likely_playlist = self._is_playlist_url(url)
+            # Add results to treeview
+            for idx, result in enumerate(results, 1):
+                title = result.get("title", "Unknown")
+                author = result.get("author", "Unknown")
+                duration = result.get("duration", "Unknown")
+                platform = result.get("platform", "Unknown")
+                url = result.get("url", "")
+                
+                # Detect if URL might be a playlist
+                is_likely_playlist = self._is_playlist_url(url)
+                
+                # Add playlist indicator to title
+                if is_likely_playlist:
+                    title = f"📋 {title}"
+                
+                # Add available qualities to title if present
+                available_qualities = result.get("available_qualities", [])
+                if available_qualities:
+                    quality_str = ", ".join(available_qualities[:3])  # Show top 3 qualities
+                    title = f"{title} [{quality_str}]"
+                
+                # Map platform to icon for tree column
+                platform_lower = platform.lower()
+                if "youtube" in platform_lower:
+                    icon = self.app.icons.get("youtube_logo")
+                elif "ok.ru" in platform_lower:
+                    icon = self.app.icons.get("okru_logo")
+                elif "vimeo" in platform_lower:
+                    icon = self.app.icons.get("vimeo_logo")
+                else:
+                    icon = self.app.icons.get("web_logo")
+                
+                # Insert row without category column
+                item_id = self.results_tree.insert(
+                    "",
+                    END,
+                    text=f" {idx}",
+                    image=icon,
+                    values=("▶", title, author, duration, platform),
+                    tags=(url,)
+                )
             
-            # Add playlist indicator to title
-            if is_likely_playlist:
-                title = f"📋 {title}"
-            
-            # Add available qualities to title if present
-            available_qualities = result.get("available_qualities", [])
-            if available_qualities:
-                quality_str = ", ".join(available_qualities[:3])  # Show top 3 qualities
-                title = f"{title} [{quality_str}]"
-            
-            # Map platform to icon for tree column
-            platform_lower = platform.lower()
-            if "youtube" in platform_lower:
-                icon = self.app.icons.get("youtube_logo")
-            elif "ok.ru" in platform_lower:
-                icon = self.app.icons.get("okru_logo")
-            elif "vimeo" in platform_lower:
-                icon = self.app.icons.get("vimeo_logo")
+            if results:
+                self.status_label.config(text=f"Found {len(results)} result(s)", foreground="#d4d4d4")
             else:
-                icon = self.app.icons.get("web_logo")
-            
-            # Insert row without category column
-            item_id = self.results_tree.insert(
-                "",
-                END,
-                text=f" {idx}",
-                image=icon,
-                values=("▶", title, author, duration, platform),
-                tags=(url,)
-            )
-        
-        if results:
-            self.status_label.config(text=f"Found {len(results)} result(s)", foreground="#d4d4d4")
-        else:
-            self.status_label.config(text="No results found", foreground="#d4d4d4")
+                self.status_label.config(text="No results found", foreground="#d4d4d4")
+        except tk.TclError as e:
+            # Widget was destroyed - ignore
+            self.logger.debug(f"TclError in display_results: {e}")
+        except Exception as e:
+            # Log other errors but don't crash
+            self.logger.error(f"Error in display_results: {e}", exc_info=True)
     
     def _is_playlist_url(self, url: str) -> bool:
         """
@@ -995,50 +1173,91 @@ class SearchScreen(ttk.Frame):
     
     def add_selected_to_queue(self, event=None):
         """Add selected video to queue with quality selection."""
-        selection = self.results_tree.selection()
-        
-        if not selection:
-            messagebox.showwarning("No Selection", "Please select a video to add")
-            return
-        
-        # Get selected item
-        item = selection[0]
-        values = self.results_tree.item(item, "values")
-        tags = self.results_tree.item(item, "tags")
-        
-        if not tags or not tags[0]:
-            messagebox.showerror("Error", "Invalid video URL")
-            return
-        
-        url = tags[0]
-        title = values[1] if len(values) > 1 else "video"  # Title is now at index 1
-        
-        # Phase 2: Show loading status and fetch formats
-        self.status_label.config(text=f"Fetching available qualities for '{title}'...", foreground="#3498db")
-        
-        # Run metadata fetch in background thread
-        threading.Thread(
-            target=self._fetch_formats_and_add,
-            args=(url, title),
-            daemon=True
-        ).start()
+        try:
+            selection = self.results_tree.selection()
+            
+            if not selection:
+                messagebox.showwarning("No Selection", "Please select a video to add")
+                return
+            
+            # Get selected item
+            item = selection[0]
+            
+            # Check if item still exists
+            if not self.results_tree.exists(item):
+                return
+            
+            values = self.results_tree.item(item, "values")
+            tags = self.results_tree.item(item, "tags")
+            
+            if not tags or not tags[0]:
+                messagebox.showerror("Error", "Invalid video URL")
+                return
+            
+            url = tags[0]
+            title = values[1] if len(values) > 1 else "video"  # Title is now at index 1
+            
+            # Phase 2: Show loading status and fetch formats
+            self.status_label.config(text=f"Fetching available qualities for '{title}'...", foreground="#3498db")
+            
+            # Run metadata fetch in background thread
+            threading.Thread(
+                target=self._fetch_formats_and_add,
+                args=(url, title),
+                daemon=True
+            ).start()
+        except tk.TclError as e:
+            # Widget was destroyed or invalid - ignore
+            self.logger.debug(f"TclError in add_selected_to_queue: {e}")
+        except Exception as e:
+            # Log other errors but don't crash
+            self.logger.error(f"Error in add_selected_to_queue: {e}", exc_info=True)
 
     def _fetch_formats_and_add(self, url, title):
         """Identify available formats and show selection dialog."""
         try:
-            # Use downloader from app
-            downloader = self.app.download_manager.video_downloader
-            result = downloader.extract_info(url)
+            # Check if widget is still alive
+            if self.is_destroyed():
+                self.logger.debug("Widget destroyed, skipping format fetch")
+                return
             
-            if result['type'] == 'playlist':
-                # Show playlist confirmation on main thread
-                self.after(0, lambda r=result: self._show_playlist_confirm(r))
-            else:
-                # Show quality dialog for single video on main thread
-                self.after(0, lambda v=result['video_info']: self._show_quality_dialog(v))
+            # Use downloader from app with timeout
+            import concurrent.futures
+            from threading import Thread
+            
+            downloader = self.app.download_manager.video_downloader
+            
+            # Create a future for the extraction with timeout
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(downloader.extract_info, url)
+            
+            try:
+                # Wait max 15 seconds for extraction
+                result = future.result(timeout=15)
+                
+                # Check again if widget is still alive
+                if self.is_destroyed():
+                    self.logger.debug("Widget destroyed during format fetch, skipping callback")
+                    return
+                
+                if result['type'] == 'playlist':
+                    # Show playlist confirmation on main thread
+                    self.safe_after(0, lambda r=result: self._show_playlist_confirm(r))
+                else:
+                    # Show quality dialog for single video on main thread
+                    self.safe_after(0, lambda v=result['video_info']: self._show_quality_dialog(v))
+                    
+            except concurrent.futures.TimeoutError:
+                # Timeout - show default quality options
+                self.logger.warning(f"Timeout fetching formats for {url}, using defaults")
+                if not self.is_destroyed():
+                    self.safe_after(0, lambda: self._show_default_quality_dialog(url, title))
+            finally:
+                executor.shutdown(wait=False)
             
         except Exception as e:
-            self.after(0, lambda msg=str(e): self._on_metadata_error(msg))
+            if not self.is_destroyed():
+                self.safe_after(0, lambda msg=str(e): self._on_metadata_error(msg))
 
     def _show_playlist_confirm(self, playlist_info):
         """Confirm adding a playlist to the queue."""
@@ -1099,18 +1318,46 @@ class SearchScreen(ttk.Frame):
         else:
             self.status_label.config(text="No videos added from playlist", foreground="#ef4444")
             
-        self.after(5000, lambda: self.status_label.config(text="Enter a search query to find videos", foreground="#888888"))
+        self.safe_after(5000, lambda: self.status_label.config(text="Enter a search query to find videos", foreground="#888888"))
 
     def _show_quality_dialog(self, video_info):
         """Show the quality selection dialog."""
-        dialog = QualityDialog(self, video_info.title, video_info.available_qualities)
-        
-        if dialog.result:
-            video_info.selected_quality = dialog.result
-            self._finalize_add_to_queue(video_info)
-        else:
-            # User cancelled
-            self.status_label.config(text="Enter a search query to find videos", foreground="#888888")
+        try:
+            dialog = QualityDialog(self, video_info.title, video_info.available_qualities)
+            
+            if dialog.result:
+                video_info.selected_quality = dialog.result
+                self._finalize_add_to_queue(video_info)
+            else:
+                # User cancelled
+                self.status_label.config(text="Enter a search query to find videos", foreground="#888888")
+        except tk.TclError as e:
+            self.logger.debug(f"TclError in _show_quality_dialog: {e}")
+        except Exception as e:
+            self.logger.error(f"Error in _show_quality_dialog: {e}", exc_info=True)
+    
+    def _show_default_quality_dialog(self, url, title):
+        """Show quality dialog with default options when format fetch times out."""
+        try:
+            # Create VideoInfo with default qualities
+            video_info = VideoInfo(
+                url=url,
+                title=title,
+                available_qualities=["1080p", "720p", "480p", "360p", "Audio Only"]
+            )
+            
+            dialog = QualityDialog(self, title, video_info.available_qualities)
+            
+            if dialog.result:
+                video_info.selected_quality = dialog.result
+                self._finalize_add_to_queue(video_info)
+            else:
+                # User cancelled
+                self.status_label.config(text="Enter a search query to find videos", foreground="#888888")
+        except tk.TclError as e:
+            self.logger.debug(f"TclError in _show_default_quality_dialog: {e}")
+        except Exception as e:
+            self.logger.error(f"Error in _show_default_quality_dialog: {e}", exc_info=True)
 
     def _finalize_add_to_queue(self, video_info):
         """Complete the addition of task to queue."""
@@ -1142,7 +1389,7 @@ class SearchScreen(ttk.Frame):
             
             # Non-blocking success notification
             self.status_label.config(text=f"Added '{video_info.title}' ({video_info.selected_quality}) to queue!", foreground="#10b981")
-            self.after(3000, lambda: self.status_label.config(text="Enter a search query to find videos", foreground="#888888"))
+            self.safe_after(3000, lambda: self.status_label.config(text="Enter a search query to find videos", foreground="#888888"))
             
         except ValueError as e:
             messagebox.showerror("Error", str(e))
@@ -1158,10 +1405,17 @@ class SearchScreen(ttk.Frame):
     
     def clear_results(self):
         """Clear all search results."""
-        for item in self.results_tree.get_children():
-            self.results_tree.delete(item)
-        self.search_results = []
-        self.expanded_items = {}
+        try:
+            for item in self.results_tree.get_children():
+                self.results_tree.delete(item)
+            self.search_results = []
+            self.expanded_items = {}
+        except tk.TclError as e:
+            # Widget was destroyed - ignore
+            self.logger.debug(f"TclError in clear_results: {e}")
+        except Exception as e:
+            # Log other errors but don't crash
+            self.logger.error(f"Error in clear_results: {e}", exc_info=True)
 
     def show_platform_comparison(self):
         """Show platform selection dialog and launch batch comparison."""
@@ -1239,11 +1493,11 @@ class SearchScreen(ttk.Frame):
             ranked_results = self.search_manager.rank_comparison_results(platform_results)
             
             # Show comparison dialog on main thread
-            self.after(0, lambda r=ranked_results: self._show_comparison_dialog(query, r))
+            self.safe_after(0, lambda r=ranked_results: self._show_comparison_dialog(query, r))
             
         except Exception as e:
             self.logger.error(f"Batch comparison failed: {e}")
-            self.after(0, lambda err=str(e): self._on_comparison_error(err))
+            self.safe_after(0, lambda err=str(e): self._on_comparison_error(err))
     
     def _show_comparison_dialog(self, query, ranked_results):
         """Show the batch comparison dialog."""
@@ -1265,7 +1519,7 @@ class SearchScreen(ttk.Frame):
         )
         
         # Auto-hide status after dialog closes
-        self.after(3000, lambda: self.status_label.config(
+        self.safe_after(3000, lambda: self.status_label.config(
             text="Enter a search query to find videos",
             foreground="#888888"
         ))
@@ -1328,15 +1582,27 @@ class SearchScreen(ttk.Frame):
     def _check_platform_health_thread(self):
         """Check platform health in background thread."""
         try:
+            # Check if widget is still alive before starting
+            if self.is_destroyed():
+                self.logger.debug("Widget destroyed, skipping health check")
+                return
+            
             # Check health of all platforms
             health_results = self.search_manager.check_all_platforms_health()
             
+            # Check again before scheduling callback
+            if self.is_destroyed():
+                self.logger.debug("Widget destroyed during health check, skipping callback")
+                return
+            
             # Update UI on main thread
-            self.after(0, lambda r=health_results: self._on_health_check_complete(r))
+            self.safe_after(0, lambda r=health_results: self._on_health_check_complete(r))
             
         except Exception as e:
             self.logger.error(f"Platform health check failed: {e}")
-            self.after(0, lambda err=str(e): self._on_health_check_error(err))
+            # Check if widget is still alive before scheduling error callback
+            if not self.is_destroyed():
+                self.safe_after(0, lambda err=str(e): self._on_health_check_error(err))
     
     def _on_health_check_complete(self, health_results):
         """Handle health check completion on main thread."""
@@ -1362,7 +1628,7 @@ class SearchScreen(ttk.Frame):
         )
         
         # Auto-hide status after 5 seconds
-        self.after(5000, lambda: self.status_label.config(
+        self.safe_after(5000, lambda: self.status_label.config(
             text="Enter a search query to find videos",
             foreground="#888888"
         ))
@@ -1453,14 +1719,28 @@ class SearchScreen(ttk.Frame):
         Args:
             message: Message to display with the progress bar.
         """
-        self.progress_label.config(text=message)
-        self.progress_frame.pack(fill=X, pady=(0, 10), before=self.status_label)
-        self.progress_bar.start(10)  # Start animation with 10ms interval
+        try:
+            self.progress_label.config(text=message)
+            self.progress_frame.pack(fill=X, pady=(0, 10), before=self.status_label)
+            self.progress_bar.start(10)  # Start animation with 10ms interval
+        except tk.TclError as e:
+            # Widget was destroyed - ignore
+            self.logger.debug(f"TclError in show_progress: {e}")
+        except Exception as e:
+            # Log other errors but don't crash
+            self.logger.error(f"Error in show_progress: {e}", exc_info=True)
     
     def hide_progress(self):
         """Hide the progress bar."""
-        self.progress_bar.stop()
-        self.progress_frame.pack_forget()
+        try:
+            self.progress_bar.stop()
+            self.progress_frame.pack_forget()
+        except tk.TclError as e:
+            # Widget was destroyed - ignore
+            self.logger.debug(f"TclError in hide_progress: {e}")
+        except Exception as e:
+            # Log other errors but don't crash
+            self.logger.error(f"Error in hide_progress: {e}", exc_info=True)
     
     def update_progress_message(self, message):
         """
@@ -1469,7 +1749,56 @@ class SearchScreen(ttk.Frame):
         Args:
             message: New message to display.
         """
-        self.progress_label.config(text=message)
+        try:
+            self.progress_label.config(text=message)
+        except tk.TclError as e:
+            # Widget was destroyed - ignore
+            self.logger.debug(f"TclError in update_progress_message: {e}")
+        except Exception as e:
+            # Log other errors but don't crash
+            self.logger.error(f"Error in update_progress_message: {e}", exc_info=True)
+    
+    def _safe_update_status(self, text, foreground="#888888"):
+        """
+        Safely update status label text and color.
+        
+        Args:
+            text: Status text to display
+            foreground: Text color
+        """
+        try:
+            self.status_label.config(text=text, foreground=foreground)
+        except tk.TclError as e:
+            # Widget was destroyed - ignore
+            self.logger.debug(f"TclError in _safe_update_status: {e}")
+        except Exception as e:
+            # Log other errors but don't crash
+            self.logger.error(f"Error in _safe_update_status: {e}", exc_info=True)
+    
+    def cleanup(self):
+        """
+        Cleanup method to unsubscribe from events and cancel callbacks.
+        
+        This method should be called when the screen is being destroyed or
+        when switching away from this screen to prevent memory leaks and
+        ensure proper resource cleanup.
+        """
+        self.logger.info("Cleaning up SearchScreen")
+        
+        # Unsubscribe from all events
+        if self.event_bus:
+            for sub_id in self._subscription_ids:
+                try:
+                    self.event_bus.unsubscribe(sub_id)
+                    self.logger.debug(f"Unsubscribed from event with ID {sub_id}")
+                except Exception as e:
+                    self.logger.error(f"Error unsubscribing from event {sub_id}: {e}")
+            self._subscription_ids.clear()
+        
+        # Cleanup callbacks from SafeCallbackMixin
+        self.cleanup_callbacks()
+        
+        self.logger.info("SearchScreen cleanup complete")
 
 
 class PlatformSelectionDialog(ttk.Toplevel):

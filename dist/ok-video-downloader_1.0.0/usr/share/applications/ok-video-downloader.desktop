@@ -1,8 +1,0 @@
-[Desktop Entry]
-Version=1.0
-Type=Application
-Name=OK.ru Video Downloader
-Comment=Download videos from OK.ru
-Exec=/usr/local/bin/ok-video-downloader
-Terminal=false
-Categories=Network;AudioVideo;

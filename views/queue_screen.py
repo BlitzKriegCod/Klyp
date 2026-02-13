@@ -3,27 +3,83 @@ Queue Screen for Klyp Video Downloader.
 Displays download queue with progress tracking.
 """
 
-import ttkbootstrap as ttk
-from ttkbootstrap.constants import *
+# Standard library imports
 import tkinter as tk
 from tkinter import messagebox, filedialog
+
+# Third-party imports
+import ttkbootstrap as ttk
+from ttkbootstrap.constants import *
+
+# Local imports
 from models import DownloadStatus
+from utils.event_bus import EventBus, EventType
+from utils.safe_callback_mixin import SafeCallbackMixin
 
 
-class QueueScreen(ttk.Frame):
+class QueueScreen(SafeCallbackMixin, ttk.Frame):
     """Queue screen with download list and progress tracking."""
     
-    def __init__(self, parent, app):
+    def __init__(self, parent, app, event_bus: EventBus = None):
         """
         Initialize QueueScreen.
         
         Args:
             parent: Parent widget.
             app: Main application instance.
+            event_bus: EventBus instance for event subscriptions (optional).
         """
-        super().__init__(parent)
+        ttk.Frame.__init__(self, parent)
+        SafeCallbackMixin.__init__(self)
         self.app = app
+        self.event_bus = event_bus
+        self._subscription_ids = []
+        self._pending_refresh_id = None  # For debouncing refresh_queue
+        
+        # Subscribe to events if event_bus is provided
+        if self.event_bus:
+            self._subscribe_to_events()
+        
         self.setup_ui()
+    
+    def _get_queue_manager(self):
+        """
+        Get QueueManager instance safely.
+        
+        Returns QueueManager singleton, which is safe even if self.app is None.
+        """
+        from controllers.queue_manager import QueueManager
+        return QueueManager()
+    
+    def _subscribe_to_events(self):
+        """Subscribe to EventBus events."""
+        # Subscribe to download progress events
+        sub_id = self.event_bus.subscribe(
+            EventType.DOWNLOAD_PROGRESS,
+            self._on_download_progress
+        )
+        self._subscription_ids.append(sub_id)
+        
+        # Subscribe to download complete events
+        sub_id = self.event_bus.subscribe(
+            EventType.DOWNLOAD_COMPLETE,
+            self._on_download_complete
+        )
+        self._subscription_ids.append(sub_id)
+        
+        # Subscribe to download failed events
+        sub_id = self.event_bus.subscribe(
+            EventType.DOWNLOAD_FAILED,
+            self._on_download_failed
+        )
+        self._subscription_ids.append(sub_id)
+        
+        # Subscribe to queue updated events
+        sub_id = self.event_bus.subscribe(
+            EventType.QUEUE_UPDATED,
+            self._on_queue_updated
+        )
+        self._subscription_ids.append(sub_id)
     
     def setup_ui(self):
         """Set up the queue screen UI."""
@@ -220,6 +276,75 @@ class QueueScreen(ttk.Frame):
         # Initial refresh
         self.refresh_queue()
     
+    def _on_download_progress(self, event):
+        """
+        Handle download progress event.
+        
+        Args:
+            event: Event with data containing task_id and progress
+        """
+        # Update progress bar for selected task
+        self.safe_after_idle(self._update_progress_bar)
+        
+        # Update the specific task row in the tree view
+        task_id = event.data.get("task_id")
+        progress = event.data.get("progress", 0.0)
+        
+        if task_id:
+            self.safe_after_idle(lambda: self._update_task_row(task_id, progress))
+    
+    def _on_download_complete(self, event):
+        """
+        Handle download complete event.
+        
+        Args:
+            event: Event with data containing task_id and file_path
+        """
+        # Refresh queue to show completed status (with debouncing)
+        self._schedule_refresh()
+    
+    def _on_download_failed(self, event):
+        """
+        Handle download failed event.
+        
+        Args:
+            event: Event with data containing task_id and error
+        """
+        # Refresh queue to show failed status (with debouncing)
+        self._schedule_refresh()
+    
+    def _on_queue_updated(self, event):
+        """
+        Handle queue updated event.
+        
+        Args:
+            event: Event with data containing action and optional task_id
+        """
+        # Refresh queue to show updated state (with debouncing)
+        self._schedule_refresh()
+    
+    def _schedule_refresh(self):
+        """
+        Schedule a refresh with debouncing.
+        
+        Cancels any pending refresh and schedules a new one after 500ms.
+        This prevents excessive UI updates when multiple events arrive quickly.
+        """
+        # Cancel pending refresh if exists
+        if self._pending_refresh_id:
+            try:
+                self.after_cancel(self._pending_refresh_id)
+            except:
+                pass
+        
+        # Schedule new refresh after 500ms
+        self._pending_refresh_id = self.safe_after(500, self._do_refresh)
+    
+    def _do_refresh(self):
+        """Execute the actual refresh and clear pending ID."""
+        self._pending_refresh_id = None
+        self.refresh_queue()
+    
     def refresh_queue(self):
         """Refresh the queue display more efficiently by updating existing items."""
         # Get all tasks
@@ -306,39 +431,64 @@ class QueueScreen(ttk.Frame):
         self._update_progress_bar()
     
     def _update_progress_bar(self):
-        """Update progress bar for selected or downloading task."""
-        selection = self.queue_tree.selection()
-        
-        if not selection:
-            # No selection, show first downloading task
-            tasks = self.app.queue_manager.get_all_tasks()
-            downloading_task = next((t for t in tasks if t.status == DownloadStatus.DOWNLOADING), None)
+        """Update progress bar to show overall download progress."""
+        try:
+            from controllers.queue_manager import QueueManager
+            from models import DownloadStatus
             
-            if downloading_task:
-                self.progress_bar["value"] = downloading_task.progress
-                self.progress_label.config(text=f"{downloading_task.progress:.1f}%")
-            else:
-                self.progress_bar["value"] = 0
-                self.progress_label.config(text="0%")
-            return
-        
-        # Get selected task
-        item = selection[0]
-        tags = self.queue_tree.item(item, "tags")
-        
-        if tags and tags[0]:
-            task_id = tags[0]
-            task = self.app.queue_manager.get_task(task_id)
+            queue_manager = QueueManager()
             
-            if task:
-                self.progress_bar["value"] = task.progress
-                self.progress_label.config(text=f"{task.progress:.1f}%")
-            else:
+            # Get all downloading tasks
+            downloading_tasks = [
+                task for task in queue_manager.get_all_tasks()
+                if task.status == DownloadStatus.DOWNLOADING
+            ]
+            
+            if not downloading_tasks:
+                # No active downloads, show 0%
                 self.progress_bar["value"] = 0
-                self.progress_label.config(text="0%")
-        else:
+                self.progress_label.config(text="0% (No active downloads)")
+                return
+            
+            # Calculate average progress
+            total_progress = sum(task.progress for task in downloading_tasks)
+            avg_progress = total_progress / len(downloading_tasks)
+            
+            # Update progress bar
+            self.progress_bar["value"] = avg_progress
+            self.progress_label.config(
+                text=f"{avg_progress:.1f}% ({len(downloading_tasks)} active)"
+            )
+            
+        except Exception as e:
+            # Silently ignore errors (widget might be destroyed)
             self.progress_bar["value"] = 0
             self.progress_label.config(text="0%")
+    
+    def _update_task_row(self, task_id: str, progress: float):
+        """
+        Update a specific task row in the tree view with new progress.
+        
+        Args:
+            task_id: ID of the task to update
+            progress: Progress percentage (0-100)
+        """
+        try:
+            # Find the item with this task_id
+            for item in self.queue_tree.get_children():
+                tags = self.queue_tree.item(item, "tags")
+                if tags and tags[0] == task_id:
+                    # Update only the progress column (index 4: title, author, duration, status, progress)
+                    current_values = self.queue_tree.item(item, "values")
+                    if current_values and len(current_values) >= 5:
+                        # Keep other columns the same, only update progress
+                        new_values = list(current_values)
+                        new_values[4] = f"{progress:.1f}%"
+                        self.queue_tree.item(item, values=new_values)
+                    break
+        except Exception as e:
+            # Silently ignore errors (widget might be destroyed)
+            pass
     
     def remove_selected(self):
         """Remove selected task from queue."""
@@ -432,9 +582,15 @@ class QueueScreen(ttk.Frame):
                 messagebox.showinfo("Already Running", "Downloads are already in progress")
                 return
             
-            # Start downloads
-            self.app.start_downloads()
-            messagebox.showinfo("Started", "Download processing started")
+            # Start downloads using DownloadService
+            from controllers.download_service import DownloadService
+            download_service = DownloadService()
+            started_count = download_service.start_all_downloads()
+            
+            if started_count > 0:
+                messagebox.showinfo("Started", f"Started {started_count} download(s)")
+            else:
+                messagebox.showinfo("No Downloads", "No queued downloads to start")
             
             # Start auto-refresh
             self.auto_refresh()
@@ -458,18 +614,15 @@ class QueueScreen(ttk.Frame):
             messagebox.showerror("Error", f"Failed to stop downloads: {str(e)}")
     
     def auto_refresh(self):
-        """Auto-refresh queue display while downloads are active."""
-        was_active = self.app.download_manager.is_running or self.app.download_manager.get_active_download_count() > 0
+        """
+        Trigger an initial refresh when downloads start.
         
-        # Always refresh to show current state
+        Note: This method no longer uses recursive polling. UI updates are now
+        handled through EventBus events (DOWNLOAD_PROGRESS, DOWNLOAD_COMPLETE, etc.)
+        which provide real-time updates without polling overhead.
+        """
+        # Do an initial refresh to show current state
         self.refresh_queue()
-        
-        if was_active:
-            # Schedule next refresh in 1 second
-            self.after(1000, self.auto_refresh)
-        else:
-            # Do one final refresh after downloads complete
-            self.after(500, self.refresh_queue)
 
     def show_context_menu(self, event):
         """Show context menu on right-click."""
@@ -489,7 +642,9 @@ class QueueScreen(ttk.Frame):
         tags = self.queue_tree.item(item, "tags")
         if tags and tags[0]:
             task_id = tags[0]
-            if self.app.download_manager.start_task(task_id):
+            from controllers.download_service import DownloadService
+            download_service = DownloadService()
+            if download_service.start_download(task_id):
                 self.refresh_queue()
                 self.auto_refresh()
             else:
@@ -506,10 +661,42 @@ class QueueScreen(ttk.Frame):
         tags = self.queue_tree.item(item, "tags")
         if tags and tags[0]:
             task_id = tags[0]
-            if self.app.download_manager.stop_task(task_id):
+            from controllers.download_service import DownloadService
+            download_service = DownloadService()
+            if download_service.stop_download(task_id):
                 self.refresh_queue()
             else:
                 messagebox.showerror("Error", "Failed to stop task")
+    
+    def cleanup(self):
+        """
+        Cleanup method to be called when screen is being destroyed or switched away.
+        
+        This method:
+        - Unsubscribes from all EventBus events
+        - Cancels all pending callbacks via SafeCallbackMixin
+        - Clears references to managers
+        """
+        # Unsubscribe from all events
+        if self.event_bus:
+            for sub_id in self._subscription_ids:
+                self.event_bus.unsubscribe(sub_id)
+            self._subscription_ids.clear()
+        
+        # Cancel pending refresh
+        if self._pending_refresh_id:
+            try:
+                self.after_cancel(self._pending_refresh_id)
+            except:
+                pass
+            self._pending_refresh_id = None
+        
+        # Cleanup callbacks from SafeCallbackMixin
+        self.cleanup_callbacks()
+        
+        # Clear references (helps with garbage collection)
+        self.app = None
+        self.event_bus = None
 
     def open_file_location(self):
         """Open the file location of the selected completed download."""
@@ -526,9 +713,16 @@ class QueueScreen(ttk.Frame):
         tags = self.queue_tree.item(item, "tags")
         if not tags or not tags[0]:
             return
+        
+        # Check if app is still available (screen not destroyed)
+        if not self.app:
+            return
             
         task_id = tags[0]
-        task = self.app.queue_manager.get_task(task_id)
+        # Use QueueManager singleton directly
+        from controllers.queue_manager import QueueManager
+        queue_manager = QueueManager()
+        task = queue_manager.get_task(task_id)
         
         if not task:
             messagebox.showwarning("Task Not Found", "Selected task not found")

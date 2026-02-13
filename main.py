@@ -15,6 +15,8 @@ from utils import (
     get_logger, set_debug_mode, info, error, exception
 )
 from utils.resume_dialog import ResumeDialog
+from utils.event_bus import EventBus, EventType
+from utils.thread_pool_manager import ThreadPoolManager
 from PIL import Image, ImageTk
 from views import HomeScreen, SearchScreen, QueueScreen, SettingsScreen, HistoryScreen, SubtitlesScreen
 
@@ -26,6 +28,10 @@ class KlypVideoDownloader(ttk.Window):
         # Initialize logger
         self.logger = get_logger()
         info("Initializing Klyp - Universal Video Downloader")
+        
+        # Initialize EventBus
+        self._event_bus = EventBus()
+        info("EventBus initialized")
         
         # Initialize managers
         self.settings_manager = SettingsManager()
@@ -60,6 +66,10 @@ class KlypVideoDownloader(ttk.Window):
         except Exception as e:
             error(f"Failed to set application icon: {e}")
         
+        # Bind window state change events to handle maximize/minimize
+        self.bind("<Configure>", self._on_window_configure)
+        self._last_geometry = None
+        
         # Initialize theme manager after window creation
         self.theme_manager = ThemeManager(self, self.settings_manager)
         
@@ -86,9 +96,6 @@ class KlypVideoDownloader(ttk.Window):
         notifications_enabled = self.settings_manager.get("notifications_enabled", True)
         self.download_manager.set_notifications_enabled(notifications_enabled)
         
-        # Set up download status callback
-        self.download_manager.set_status_callback(self.on_download_status_update)
-        
         # Center window on screen
         self.position_center()
         
@@ -98,6 +105,16 @@ class KlypVideoDownloader(ttk.Window):
         
         info("Setting up UI")
         self.setup_ui()
+        
+        # Start EventBus after UI is created
+        info("Starting EventBus")
+        self._event_bus.start(self)
+        
+        # Subscribe to settings changes to update debug mode
+        self._event_bus.subscribe(
+            EventType.SETTINGS_CHANGED,
+            self._on_settings_changed
+        )
         
         # Clean up old logs
         self.logger.cleanup_old_logs(days=7)
@@ -171,12 +188,21 @@ class KlypVideoDownloader(ttk.Window):
         self.notebook.pack(fill=BOTH, expand=YES)
         
         # Create screens
-        self.home_screen = HomeScreen(self.notebook, self)
-        self.search_screen = SearchScreen(self.notebook, self)
-        self.queue_screen = QueueScreen(self.notebook, self)
+        self.home_screen = HomeScreen(self.notebook, self, self._event_bus)
+        self.search_screen = SearchScreen(self.notebook, self, self._event_bus)
+        self.queue_screen = QueueScreen(self.notebook, self, self._event_bus)
         self.subtitles_screen = SubtitlesScreen(self.notebook, self)
-        self.settings_screen = SettingsScreen(self.notebook, self)
-        self.history_screen = HistoryScreen(self.notebook, self)
+        self.settings_screen = SettingsScreen(self.notebook, self, self._event_bus)
+        self.history_screen = HistoryScreen(self.notebook, self, self._event_bus)
+        
+        # Enable thread-safety debugging if configured
+        debug_thread_safety = self.settings_manager.get("debug_thread_safety", False)
+        if debug_thread_safety:
+            info("Thread-safety debugging enabled")
+            for screen in [self.home_screen, self.search_screen, self.queue_screen, 
+                          self.settings_screen, self.history_screen]:
+                if hasattr(screen, 'set_debug_thread_safety'):
+                    screen.set_debug_thread_safety(True)
         
         # Add tabs to notebook
         # Start with all icons in light (white) and update on selection
@@ -189,12 +215,43 @@ class KlypVideoDownloader(ttk.Window):
         
         # Bind tab change event for dynamic icons
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        
+        # Track current screen for cleanup
+        self._current_screen = None
     
     def _on_tab_changed(self, event=None):
         """Update tab icons when selection changes: selected=emerald, others=light."""
         tab_id = self.notebook.index("current")
         icon_names = ["home", "search", "queue", "subtitles", "settings", "history"]
         
+        # Get the new screen
+        screen_map = [
+            self.home_screen,
+            self.search_screen,
+            self.queue_screen,
+            self.subtitles_screen,
+            self.settings_screen,
+            self.history_screen
+        ]
+        
+        new_screen = screen_map[tab_id] if tab_id < len(screen_map) else None
+        
+        # Cleanup previous screen if it has a cleanup method
+        # NOTE: We don't cleanup when switching tabs because screens need to keep
+        # listening to events (e.g., QueueScreen needs to update when downloads complete)
+        # Cleanup only happens on application shutdown
+        # if self._current_screen is not None and self._current_screen != new_screen:
+        #     if hasattr(self._current_screen, 'cleanup'):
+        #         try:
+        #             info(f"Cleaning up previous screen: {self._current_screen.__class__.__name__}")
+        #             self._current_screen.cleanup()
+        #         except Exception as e:
+        #             error(f"Error cleaning up screen: {e}", exc_info=True)
+        
+        # Update current screen
+        self._current_screen = new_screen
+        
+        # Update tab icons
         for i, name in enumerate(icon_names):
             if i == tab_id:
                 # Active tab gets Emerald icon
@@ -202,6 +259,20 @@ class KlypVideoDownloader(ttk.Window):
             else:
                 # Inactive tabs get Light (white) icon
                 self.notebook.tab(i, image=self.icons_light.get(name))
+    
+    def _on_settings_changed(self, event):
+        """Handle settings changes, particularly debug_thread_safety."""
+        changed_keys = event.data.get("changed_keys", [])
+        
+        if "debug_thread_safety" in changed_keys:
+            debug_enabled = event.data.get("settings", {}).get("debug_thread_safety", False)
+            info(f"Thread-safety debugging {'enabled' if debug_enabled else 'disabled'}")
+            
+            # Update all screens
+            for screen in [self.home_screen, self.search_screen, self.queue_screen, 
+                          self.settings_screen, self.history_screen]:
+                if hasattr(screen, 'set_debug_thread_safety'):
+                    screen.set_debug_thread_safety(debug_enabled)
     
     def position_center(self):
         """Center the window on the screen."""
@@ -213,6 +284,30 @@ class KlypVideoDownloader(ttk.Window):
         x = (screen_width // 2) - (width // 2)
         y = (screen_height // 2) - (height // 2)
         self.geometry(f'{width}x{height}+{x}+{y}')
+    
+    def _on_window_configure(self, event):
+        """Handle window configuration changes (resize, maximize, etc)."""
+        try:
+            # Only process events for the main window, not child widgets
+            if event.widget != self:
+                return
+            
+            # Get current geometry
+            current_geometry = self.geometry()
+            
+            # Avoid processing duplicate events
+            if current_geometry == self._last_geometry:
+                return
+            
+            self._last_geometry = current_geometry
+            
+            # Log geometry changes in debug mode
+            if self.settings_manager.get("debug_mode", False):
+                info(f"Window geometry changed: {current_geometry}")
+                
+        except Exception as e:
+            # Don't let configure errors crash the app
+            error(f"Error in window configure handler: {e}", exc_info=True)
     
     def navigate_to(self, screen_name: str):
         """
@@ -283,44 +378,30 @@ class KlypVideoDownloader(ttk.Window):
     
     def on_closing(self):
         """Handle application closing."""
-        # Stop all active downloads
-        if hasattr(self, 'download_manager'):
-            self.download_manager.stop_all_downloads()
+        # Stop EventBus
+        if hasattr(self, '_event_bus'):
+            info("Stopping EventBus")
+            self._event_bus.stop()
+        
+        # Stop all active downloads using DownloadService
+        from controllers.download_service import DownloadService
+        download_service = DownloadService()
+        download_service.stop_all_downloads()
         
         # Shutdown SearchManager executor
         if hasattr(self, 'search_screen') and hasattr(self.search_screen, 'search_manager'):
             self.search_screen.search_manager.shutdown()
+        
+        # Shutdown ThreadPoolManager
+        info("Shutting down ThreadPoolManager")
+        thread_pool_manager = ThreadPoolManager()
+        thread_pool_manager.shutdown(timeout=10)
         
         # Save pending downloads
         self.save_pending_downloads()
         
         # Destroy window
         self.destroy()
-    
-    def on_download_status_update(self, task_id: str, status, progress: float):
-        """
-        Callback for download status updates. Throttled to prevent UI freeze.
-        
-        Args:
-            task_id: Task ID that was updated.
-            status: New download status.
-            progress: Progress percentage (0-100).
-        """
-        current_time = time.time()
-        
-        # Only refresh if status changed, or if enough time has passed since last refresh
-        # This prevents the UI from freezing when many progress updates arrive quickly
-        if current_time - self.last_refresh_time > self.refresh_throttle:
-            self.last_refresh_time = current_time
-            
-            # Update queue screen if it's visible
-            if hasattr(self, 'queue_screen'):
-                # Schedule UI update on main thread
-                self.after(0, self.queue_screen.refresh_queue)
-            
-            # Update home screen summary
-            if hasattr(self, 'home_screen'):
-                self.after(0, self.home_screen.update_summary)
     
     def start_downloads(self):
         """Start processing the download queue."""
@@ -336,8 +417,10 @@ class KlypVideoDownloader(ttk.Window):
             notifications_enabled = self.settings_manager.get("notifications_enabled", True)
             self.download_manager.set_notifications_enabled(notifications_enabled)
             
-            # Start downloads
-            self.download_manager.start_downloads()
+            # Start downloads using DownloadService
+            from controllers.download_service import DownloadService
+            download_service = DownloadService()
+            download_service.start_all_downloads()
             info("Download processing started successfully")
             
         except Exception as e:
@@ -349,7 +432,9 @@ class KlypVideoDownloader(ttk.Window):
         """Stop all active downloads."""
         try:
             info("Stopping all downloads")
-            self.download_manager.stop_all_downloads()
+            from controllers.download_service import DownloadService
+            download_service = DownloadService()
+            download_service.stop_all_downloads()
             info("Downloads stopped successfully")
         except Exception as e:
             error(f"Failed to stop downloads: {str(e)}", exc_info=True)

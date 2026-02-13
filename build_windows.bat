@@ -44,24 +44,24 @@ echo Building application...
 pyinstaller build_config.spec
 
 REM Check if build was successful
-if exist "dist\OKVideoDownloader" (
+if exist "dist\Klyp" (
     echo.
     echo ==========================================
     echo Build successful!
-    echo Application location: dist\OKVideoDownloader\
+    echo Application location: dist\Klyp\
     echo ==========================================
     echo.
     echo To run the application:
-    echo   cd dist\OKVideoDownloader
-    echo   OKVideoDownloader.exe
+    echo   cd dist\Klyp
+    echo   Klyp.exe
     echo.
     
     REM Create a simple launcher batch file
-    echo @echo off > dist\OKVideoDownloader\run.bat
-    echo cd /d "%%~dp0" >> dist\OKVideoDownloader\run.bat
-    echo start OKVideoDownloader.exe >> dist\OKVideoDownloader\run.bat
+    echo @echo off > dist\Klyp\run.bat
+    echo cd /d "%%~dp0" >> dist\Klyp\run.bat
+    echo start Klyp.exe >> dist\Klyp\run.bat
     
-    echo A launcher script has been created: dist\OKVideoDownloader\run.bat
+    echo A launcher script has been created: dist\Klyp\run.bat
 ) else (
     echo.
     echo Build failed!
@@ -77,25 +77,25 @@ if /i "%CREATE_INSTALLER%"=="y" (
     REM Create Inno Setup script
     (
         echo [Setup]
-        echo AppName=OK.ru Video Downloader
-        echo AppVersion=1.0.0
-        echo DefaultDirName={pf}\OKVideoDownloader
-        echo DefaultGroupName=OK.ru Video Downloader
+        echo AppName=Klyp Video Downloader
+        echo AppVersion=1.1.0
+        echo DefaultDirName={pf}\Klyp
+        echo DefaultGroupName=Klyp Video Downloader
         echo OutputDir=dist
-        echo OutputBaseFilename=OKVideoDownloader_Setup
+        echo OutputBaseFilename=Klyp_Setup
         echo Compression=lzma
         echo SolidCompression=yes
         echo.
         echo [Files]
-        echo Source: "dist\OKVideoDownloader\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+        echo Source: "dist\Klyp\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
         echo.
         echo [Icons]
-        echo Name: "{group}\OK.ru Video Downloader"; Filename: "{app}\OKVideoDownloader.exe"
-        echo Name: "{group}\Uninstall OK.ru Video Downloader"; Filename: "{uninstallexe}"
-        echo Name: "{commondesktop}\OK.ru Video Downloader"; Filename: "{app}\OKVideoDownloader.exe"
+        echo Name: "{group}\Klyp Video Downloader"; Filename: "{app}\Klyp.exe"
+        echo Name: "{group}\Uninstall Klyp Video Downloader"; Filename: "{uninstallexe}"
+        echo Name: "{commondesktop}\Klyp Video Downloader"; Filename: "{app}\Klyp.exe"
         echo.
         echo [Run]
-        echo Filename: "{app}\OKVideoDownloader.exe"; Description: "Launch OK.ru Video Downloader"; Flags: nowait postinstall skipifsilent
+        echo Filename: "{app}\Klyp.exe"; Description: "Launch Klyp Video Downloader"; Flags: nowait postinstall skipifsilent
     ) > installer_config.iss
     
     echo Installer script created: installer_config.iss

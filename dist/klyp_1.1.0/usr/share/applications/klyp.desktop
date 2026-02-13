@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.1.0
+Type=Application
+Name=Klyp Video Downloader
+Comment=Download videos from OK.ru
+Exec=/usr/local/bin/klyp
+Icon=klyp
+Terminal=false
+Categories=Network;AudioVideo;

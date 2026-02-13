@@ -140,30 +140,29 @@ class TestDownloadManager(unittest.TestCase):
             self.download_manager.set_download_mode("invalid-mode")
     
     def test_status_callback(self):
-        """Test status callback registration."""
+        """Test status callback registration (deprecated)."""
         callback_called = []
         
         def test_callback(task_id, status, progress):
             callback_called.append((task_id, status, progress))
         
+        # This method is deprecated but should not crash
         self.download_manager.set_status_callback(test_callback)
-        self.assertIsNotNone(self.download_manager.status_callback)
+        # The callback is no longer stored, so we just verify it doesn't crash
     
     def test_stop_download(self):
-        """Test stopping a download."""
+        """Test stopping a download (delegates to DownloadService)."""
         video_info = VideoInfo(url="https://ok.ru/video/123456")
         task = self.queue_manager.add_task(video_info)
         
-        # Simulate download in progress
-        self.download_manager.stop_flags[task.id] = False
-        
-        result = self.download_manager.stop_download(task.id)
+        # Test stopping a task that's not downloading (should return False or handle gracefully)
+        result = self.download_manager.stop_task(task.id)
+        # Task is QUEUED, so it should be marked as STOPPED
         self.assertTrue(result)
-        self.assertTrue(self.download_manager.stop_flags[task.id])
     
     def test_stop_nonexistent_download(self):
         """Test stopping a download that doesn't exist."""
-        result = self.download_manager.stop_download("nonexistent-id")
+        result = self.download_manager.stop_task("nonexistent-id")
         self.assertFalse(result)
     
     def test_is_task_downloading(self):

@@ -11,22 +11,69 @@ from tkinter import messagebox
 import threading
 from models import VideoInfo
 from utils.quality_dialog import QualityDialog
+from utils.safe_callback_mixin import SafeCallbackMixin
+from utils.event_bus import EventBus, EventType, Event
 
 
-class HomeScreen(ttk.Frame):
+class HomeScreen(SafeCallbackMixin, ttk.Frame):
     """Home screen with URL input and search functionality."""
     
-    def __init__(self, parent, app):
+    def __init__(self, parent, app, event_bus: EventBus = None):
         """
         Initialize HomeScreen.
         
         Args:
             parent: Parent widget.
             app: Main application instance.
+            event_bus: EventBus instance for event subscriptions (optional).
         """
-        super().__init__(parent)
+        ttk.Frame.__init__(self, parent)
+        SafeCallbackMixin.__init__(self)
         self.app = app
+        self.event_bus = event_bus
+        self._subscription_ids = []
+        
+        # Subscribe to events if event_bus is provided
+        if self.event_bus:
+            self._subscribe_to_events()
+        
         self.setup_ui()
+    
+    def _subscribe_to_events(self):
+        """Subscribe to EventBus events."""
+        # Subscribe to download complete events to update summary
+        sub_id = self.event_bus.subscribe(
+            EventType.DOWNLOAD_COMPLETE,
+            self._on_download_complete
+        )
+        self._subscription_ids.append(sub_id)
+        
+        # Subscribe to queue updated events to update counters
+        sub_id = self.event_bus.subscribe(
+            EventType.QUEUE_UPDATED,
+            self._on_queue_updated
+        )
+        self._subscription_ids.append(sub_id)
+    
+    def _on_download_complete(self, event: Event):
+        """
+        Handle download complete event.
+        
+        Args:
+            event: Event containing task_id and file_path
+        """
+        # Update summary to reflect queue changes
+        self.safe_after_idle(self.update_summary)
+    
+    def _on_queue_updated(self, event: Event):
+        """
+        Handle queue updated event.
+        
+        Args:
+            event: Event containing action, task_id, and task_count
+        """
+        # Update summary to reflect queue changes
+        self.safe_after_idle(self.update_summary)
     
     def setup_ui(self):
         """Set up the home screen UI."""
@@ -179,12 +226,12 @@ class HomeScreen(ttk.Frame):
             result = downloader.extract_info(url)
             
             if result['type'] == 'playlist':
-                self.after(0, lambda r=result: self._show_playlist_confirm(r))
+                self.safe_after(0, lambda r=result: self._show_playlist_confirm(r))
             else:
-                self.after(0, lambda v=result['video_info']: self._show_quality_dialog(v))
+                self.safe_after(0, lambda v=result['video_info']: self._show_quality_dialog(v))
             
         except Exception as e:
-            self.after(0, lambda msg=str(e): self._on_metadata_error(msg))
+            self.safe_after(0, lambda msg=str(e): self._on_metadata_error(msg))
 
     def _show_playlist_confirm(self, playlist_info):
         """Confirm adding a playlist to the queue."""
@@ -253,7 +300,7 @@ class HomeScreen(ttk.Frame):
                 foreground="#ef4444"  # Red
             )
             
-        self.after(5000, self.update_summary)
+        self.safe_after(5000, self.update_summary)
 
     def _show_quality_dialog(self, video_info):
         """Show the quality selection dialog."""
@@ -282,7 +329,7 @@ class HomeScreen(ttk.Frame):
             
             self.summary_label.config(text=f"Added '{video_info.title}' ({video_info.selected_quality})!", foreground="#10b981")
             self.url_entry.delete(0, tk.END)
-            self.after(3000, self.update_summary)
+            self.safe_after(3000, self.update_summary)
             
         except Exception as e:
             self.summary_label.config(text="Error adding to queue", foreground="#ef4444")
@@ -304,3 +351,25 @@ class HomeScreen(ttk.Frame):
             self.summary_label.config(text="1 video in queue")
         else:
             self.summary_label.config(text=f"{count} videos in queue")
+    
+    def cleanup(self):
+        """
+        Clean up resources when screen is being destroyed or switched away from.
+        
+        This method:
+        - Unsubscribes from all EventBus events
+        - Cancels all pending callbacks
+        - Clears references to help with garbage collection
+        """
+        # Unsubscribe from all events
+        if self.event_bus:
+            for sub_id in self._subscription_ids:
+                self.event_bus.unsubscribe(sub_id)
+            self._subscription_ids.clear()
+        
+        # Cancel all pending callbacks
+        self.cleanup_callbacks()
+        
+        # Clear references (helps with garbage collection)
+        self.app = None
+        self.event_bus = None

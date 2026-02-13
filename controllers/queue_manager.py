@@ -4,6 +4,7 @@ Handles download queue operations.
 """
 
 import json
+import threading
 import uuid
 from pathlib import Path
 from typing import List, Optional
@@ -11,15 +12,46 @@ from models import DownloadTask, VideoInfo, DownloadStatus
 
 
 class QueueManager:
-    """Manages the download queue operations."""
+    """
+    Manages the download queue operations with thread-safety.
+    
+    Singleton class to ensure all parts of the application use the same queue.
+    """
+    
+    _instance: Optional['QueueManager'] = None
+    _lock = threading.Lock()
+    _initialized = False
+    
+    def __new__(cls):
+        """
+        Implement singleton pattern with thread-safe initialization.
+        
+        Uses double-checked locking to ensure only one instance is created
+        even in multi-threaded environments.
+        """
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
     
     def __init__(self):
-        """Initialize QueueManager."""
+        """Initialize QueueManager with thread-safe lock."""
+        # Prevent re-initialization
+        if QueueManager._initialized:
+            return
+        
+        QueueManager._initialized = True
         self.queue: List[DownloadTask] = []
+        # THREAD-SAFE: RLock (reentrant lock) allows the same thread to acquire the lock multiple times
+        # This is necessary for methods that call other methods within the same class
+        # Example: add_task() calls is_url_in_queue(), both need the lock
+        # Regular Lock would deadlock, but RLock allows reentrant acquisition
+        self._queue_lock = threading.RLock()
     
     def add_task(self, video_info: VideoInfo, download_path: str = "") -> DownloadTask:
         """
-        Add a new download task to the queue.
+        Add a new download task to the queue (thread-safe).
         
         Args:
             video_info: VideoInfo object containing video metadata.
@@ -31,21 +63,22 @@ class QueueManager:
         Raises:
             ValueError: If the video URL is already in the queue.
         """
-        # Check if URL already exists in queue
-        if self.is_url_in_queue(video_info.url):
-            raise ValueError(f"URL already in queue: {video_info.url}")
-        
-        task = DownloadTask(
-            id=str(uuid.uuid4()),
-            video_info=video_info,
-            download_path=download_path
-        )
-        self.queue.append(task)
-        return task
+        with self._queue_lock:
+            # Check if URL already exists in queue
+            if self.is_url_in_queue(video_info.url):
+                raise ValueError(f"URL already in queue: {video_info.url}")
+            
+            task = DownloadTask(
+                id=str(uuid.uuid4()),
+                video_info=video_info,
+                download_path=download_path
+            )
+            self.queue.append(task)
+            return task
     
     def remove_task(self, task_id: str) -> bool:
         """
-        Remove a task from the queue.
+        Remove a task from the queue (thread-safe).
         
         Args:
             task_id: ID of the task to remove.
@@ -53,15 +86,121 @@ class QueueManager:
         Returns:
             True if task was removed, False if not found.
         """
-        for i, task in enumerate(self.queue):
-            if task.id == task_id:
-                self.queue.pop(i)
-                return True
-        return False
+        with self._queue_lock:
+            for i, task in enumerate(self.queue):
+                if task.id == task_id:
+                    self.queue.pop(i)
+                    return True
+            return False
     
     def get_task(self, task_id: str) -> Optional[DownloadTask]:
         """
-        Get a task by ID.
+        Get a task by ID (thread-safe).
+        
+        Args:
+            task_id: ID of the task to retrieve.
+        
+        Returns:
+            DownloadTask if found, None otherwise.
+            Returns the actual reference (not a copy) for performance.
+        """
+        with self._queue_lock:
+            for task in self.queue:
+                if task.id == task_id:
+                    return task
+            return None
+    
+    def clear_queue(self) -> None:
+        """Clear all tasks from the queue (thread-safe)."""
+        with self._queue_lock:
+            self.queue.clear()
+    
+    def get_all_tasks(self) -> List[DownloadTask]:
+        """
+        Get all tasks in the queue (thread-safe).
+        
+        Returns:
+            Copy of the list of all DownloadTask objects to prevent external modification.
+        """
+        with self._queue_lock:
+            # IMPORTANT: Return a copy to prevent external modification
+            # If we returned self.queue directly, callers could modify it without lock
+            # This would break thread-safety guarantees
+            return self.queue.copy()
+    
+    def get_tasks_by_status(self, status: DownloadStatus) -> List[DownloadTask]:
+        """
+        Get all tasks with a specific status (thread-safe).
+        
+        Args:
+            status: DownloadStatus to filter by.
+        
+        Returns:
+            List of DownloadTask objects with the specified status.
+        """
+        with self._queue_lock:
+            return [task for task in self.queue if task.status == status]
+    
+    def is_url_in_queue(self, url: str) -> bool:
+        """
+        Check if a URL is already in the queue (thread-safe).
+        
+        Args:
+            url: URL to check.
+        
+        Returns:
+            True if URL exists in queue, False otherwise.
+        """
+        with self._queue_lock:
+            return any(task.video_info.url == url for task in self.queue)
+    
+    def update_task_info(self, task_id: str, video_info: VideoInfo) -> bool:
+        """
+        Update video info for a specific task (thread-safe).
+        
+        Args:
+            task_id: ID of the task to update.
+            video_info: New VideoInfo object.
+            
+        Returns:
+            True if task was updated, False if not found.
+        """
+        with self._queue_lock:
+            task = self._get_task_unsafe(task_id)
+            if task:
+                task.video_info = video_info
+                return True
+            return False
+
+    def update_task_status(self, task_id: str, status: DownloadStatus, 
+                          progress: float = None, error_message: str = "") -> bool:
+        """
+        Update a task's status and progress (thread-safe).
+        
+        Args:
+            task_id: ID of the task to update.
+            status: New status.
+            progress: New progress value (0-100).
+            error_message: Error message if status is FAILED.
+        
+        Returns:
+            True if task was updated, False if not found.
+        """
+        with self._queue_lock:
+            task = self._get_task_unsafe(task_id)
+            if task:
+                task.status = status
+                if progress is not None:
+                    task.progress = progress
+                if error_message:
+                    task.error_message = error_message
+                return True
+            return False
+    
+    def _get_task_unsafe(self, task_id: str) -> Optional[DownloadTask]:
+        """
+        Internal method to get task without acquiring lock.
+        Assumes lock is already held by caller.
         
         Args:
             task_id: ID of the task to retrieve.
@@ -74,87 +213,9 @@ class QueueManager:
                 return task
         return None
     
-    def clear_queue(self) -> None:
-        """Clear all tasks from the queue."""
-        self.queue.clear()
-    
-    def get_all_tasks(self) -> List[DownloadTask]:
-        """
-        Get all tasks in the queue.
-        
-        Returns:
-            List of all DownloadTask objects.
-        """
-        return self.queue.copy()
-    
-    def get_tasks_by_status(self, status: DownloadStatus) -> List[DownloadTask]:
-        """
-        Get all tasks with a specific status.
-        
-        Args:
-            status: DownloadStatus to filter by.
-        
-        Returns:
-            List of DownloadTask objects with the specified status.
-        """
-        return [task for task in self.queue if task.status == status]
-    
-    def is_url_in_queue(self, url: str) -> bool:
-        """
-        Check if a URL is already in the queue.
-        
-        Args:
-            url: URL to check.
-        
-        Returns:
-            True if URL exists in queue, False otherwise.
-        """
-        return any(task.video_info.url == url for task in self.queue)
-    
-    def update_task_info(self, task_id: str, video_info: VideoInfo) -> bool:
-        """
-        Update video info for a specific task.
-        
-        Args:
-            task_id: ID of the task to update.
-            video_info: New VideoInfo object.
-            
-        Returns:
-            True if task was updated, False if not found.
-        """
-        task = self.get_task(task_id)
-        if task:
-            task.video_info = video_info
-            return True
-        return False
-
-    def update_task_status(self, task_id: str, status: DownloadStatus, 
-                          progress: float = None, error_message: str = "") -> bool:
-        """
-        Update a task's status and progress.
-        
-        Args:
-            task_id: ID of the task to update.
-            status: New status.
-            progress: New progress value (0-100).
-            error_message: Error message if status is FAILED.
-        
-        Returns:
-            True if task was updated, False if not found.
-        """
-        task = self.get_task(task_id)
-        if task:
-            task.status = status
-            if progress is not None:
-                task.progress = progress
-            if error_message:
-                task.error_message = error_message
-            return True
-        return False
-    
     def export_queue(self, file_path: str) -> bool:
         """
-        Export the current queue to a JSON file.
+        Export the current queue to a JSON file (thread-safe).
         
         Args:
             file_path: Path to save the queue file.
@@ -162,28 +223,29 @@ class QueueManager:
         Returns:
             True if successful, False otherwise.
         """
-        try:
-            queue_data = []
-            for task in self.queue:
-                task_dict = {
-                    "url": task.video_info.url,
-                    "title": task.video_info.title,
-                    "selected_quality": task.video_info.selected_quality,
-                    "filename": task.video_info.filename,
-                    "download_path": task.download_path,
-                }
-                queue_data.append(task_dict)
-            
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(queue_data, f, indent=2)
-            return True
-        except IOError as e:
-            print(f"Error exporting queue: {e}")
-            return False
+        with self._queue_lock:
+            try:
+                queue_data = []
+                for task in self.queue:
+                    task_dict = {
+                        "url": task.video_info.url,
+                        "title": task.video_info.title,
+                        "selected_quality": task.video_info.selected_quality,
+                        "filename": task.video_info.filename,
+                        "download_path": task.download_path,
+                    }
+                    queue_data.append(task_dict)
+                
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(queue_data, f, indent=2)
+                return True
+            except IOError as e:
+                print(f"Error exporting queue: {e}")
+                return False
     
     def import_queue(self, file_path: str) -> int:
         """
-        Import a queue from a JSON file.
+        Import a queue from a JSON file (thread-safe).
         
         Args:
             file_path: Path to the queue file.
@@ -205,6 +267,7 @@ class QueueManager:
                         filename=task_dict.get("filename", "")
                     )
                     
+                    # add_task is already thread-safe with lock
                     if not self.is_url_in_queue(video_info.url):
                         self.add_task(
                             video_info=video_info,
@@ -222,7 +285,7 @@ class QueueManager:
     
     def load_urls_from_file(self, file_path: str) -> int:
         """
-        Load URLs from a text file and add them to the queue.
+        Load URLs from a text file and add them to the queue (thread-safe).
         
         Args:
             file_path: Path to the text file containing URLs (one per line).
@@ -240,6 +303,7 @@ class QueueManager:
                 if url and url.startswith(("http://", "https://")):
                     try:
                         video_info = VideoInfo(url=url)
+                        # add_task is already thread-safe with lock
                         if not self.is_url_in_queue(url):
                             self.add_task(video_info=video_info)
                             added_count += 1
@@ -253,7 +317,7 @@ class QueueManager:
     
     def save_pending_downloads(self, file_path: str) -> bool:
         """
-        Save pending and downloading tasks to a file for auto-resume.
+        Save pending and downloading tasks to a file for auto-resume (thread-safe).
         
         Args:
             file_path: Path to save the pending downloads file.
@@ -261,45 +325,46 @@ class QueueManager:
         Returns:
             True if successful, False otherwise.
         """
-        try:
-            pending_tasks = []
-            for task in self.queue:
-                # Only save queued, downloading, or stopped tasks
-                if task.status in [DownloadStatus.QUEUED, DownloadStatus.DOWNLOADING, DownloadStatus.STOPPED]:
-                    task_dict = {
-                        "id": task.id,
-                        "url": task.video_info.url,
-                        "title": task.video_info.title,
-                        "thumbnail": task.video_info.thumbnail,
-                        "duration": task.video_info.duration,
-                        "author": task.video_info.author,
-                        "selected_quality": task.video_info.selected_quality,
-                        "filename": task.video_info.filename,
-                        "download_subtitles": task.video_info.download_subtitles,
-                        "download_path": task.download_path,
-                        "status": task.status.value,
-                        "progress": task.progress,
-                        "created_at": task.created_at.isoformat(),
-                    }
-                    pending_tasks.append(task_dict)
-            
-            # Only save if there are pending tasks
-            if pending_tasks:
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    json.dump(pending_tasks, f, indent=2)
-            else:
-                # Remove the file if no pending tasks
-                if Path(file_path).exists():
-                    Path(file_path).unlink()
-            
-            return True
-        except IOError as e:
-            print(f"Error saving pending downloads: {e}")
-            return False
+        with self._queue_lock:
+            try:
+                pending_tasks = []
+                for task in self.queue:
+                    # Only save queued, downloading, or stopped tasks
+                    if task.status in [DownloadStatus.QUEUED, DownloadStatus.DOWNLOADING, DownloadStatus.STOPPED]:
+                        task_dict = {
+                            "id": task.id,
+                            "url": task.video_info.url,
+                            "title": task.video_info.title,
+                            "thumbnail": task.video_info.thumbnail,
+                            "duration": task.video_info.duration,
+                            "author": task.video_info.author,
+                            "selected_quality": task.video_info.selected_quality,
+                            "filename": task.video_info.filename,
+                            "download_subtitles": task.video_info.download_subtitles,
+                            "download_path": task.download_path,
+                            "status": task.status.value,
+                            "progress": task.progress,
+                            "created_at": task.created_at.isoformat(),
+                        }
+                        pending_tasks.append(task_dict)
+                
+                # Only save if there are pending tasks
+                if pending_tasks:
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        json.dump(pending_tasks, f, indent=2)
+                else:
+                    # Remove the file if no pending tasks
+                    if Path(file_path).exists():
+                        Path(file_path).unlink()
+                
+                return True
+            except IOError as e:
+                print(f"Error saving pending downloads: {e}")
+                return False
     
     def load_pending_downloads(self, file_path: str) -> List[DownloadTask]:
         """
-        Load pending downloads from a file.
+        Load pending downloads from a file (thread-safe).
         
         Args:
             file_path: Path to the pending downloads file.
@@ -307,6 +372,8 @@ class QueueManager:
         Returns:
             List of DownloadTask objects loaded from the file.
         """
+        # Note: This method doesn't need lock as it doesn't access self.queue
+        # It only reads from file and returns tasks
         try:
             if not Path(file_path).exists():
                 return []
@@ -356,7 +423,7 @@ class QueueManager:
     
     def restore_pending_downloads(self, tasks: List[DownloadTask]) -> int:
         """
-        Restore pending downloads to the queue.
+        Restore pending downloads to the queue (thread-safe).
         
         Args:
             tasks: List of DownloadTask objects to restore.
@@ -364,9 +431,10 @@ class QueueManager:
         Returns:
             Number of tasks successfully restored.
         """
-        restored_count = 0
-        for task in tasks:
-            if not self.is_url_in_queue(task.video_info.url):
-                self.queue.append(task)
-                restored_count += 1
-        return restored_count
+        with self._lock:
+            restored_count = 0
+            for task in tasks:
+                if not any(t.video_info.url == task.video_info.url for t in self.queue):
+                    self.queue.append(task)
+                    restored_count += 1
+            return restored_count

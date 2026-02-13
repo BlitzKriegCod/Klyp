@@ -1,0 +1,10 @@
+Package: klyp
+Version: 1.1.0
+Section: net
+Priority: optional
+Architecture: amd64
+Maintainer: Klyp Development Team
+Description: Klyp Video Downloader
+ A GUI application to download videos from OK.ru (Odnoklassniki)
+ with support for queue management, multi-threaded downloads,
+ and various quality options.

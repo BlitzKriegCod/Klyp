@@ -7,22 +7,30 @@ import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 from tkinter import filedialog, messagebox
 from pathlib import Path
+from utils.safe_callback_mixin import SafeCallbackMixin
+from utils.event_bus import EventBus, Event, EventType
+from utils.logger import get_logger
 
 
-class SettingsScreen(ttk.Frame):
+class SettingsScreen(SafeCallbackMixin, ttk.Frame):
     """Settings screen with all configuration options."""
     
-    def __init__(self, parent, app):
+    def __init__(self, parent, app, event_bus: EventBus = None):
         """
         Initialize SettingsScreen.
         
         Args:
             parent: Parent widget.
             app: Main application instance.
+            event_bus: EventBus instance for event subscriptions (optional).
         """
-        super().__init__(parent)
+        ttk.Frame.__init__(self, parent)
+        SafeCallbackMixin.__init__(self)
         self.app = app
+        self.event_bus = event_bus
         self.loading = True
+        self.logger = get_logger()
+        self._subscription_ids = []  # Track event subscriptions for cleanup
         self.setup_ui()
         self.load_settings()
         self.loading = False
@@ -376,6 +384,9 @@ class SettingsScreen(ttk.Frame):
             self.dir_entry.insert(0, directory)
             self.app.settings_manager.set_download_directory(directory)
             
+            # Publish SETTINGS_CHANGED event
+            self._publish_settings_changed(["download_directory"])
+            
     def browse_cookies(self):
         """Open file browser for cookies."""
         filename = filedialog.askopenfilename(
@@ -392,6 +403,9 @@ class SettingsScreen(ttk.Frame):
             return
         new_theme = "dark" if self.theme_var.get() else "light"
         self.app.theme_manager.apply_theme(new_theme)
+        
+        # Publish SETTINGS_CHANGED event
+        self._publish_settings_changed(["theme"])
     
     def save_download_mode(self):
         """Save download mode setting."""
@@ -406,6 +420,9 @@ class SettingsScreen(ttk.Frame):
                 self.app.download_manager.set_download_mode(mode)
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to update download mode: {str(e)}")
+        
+        # Publish SETTINGS_CHANGED event
+        self._publish_settings_changed(["download_mode"])
     
     def save_proxy_settings(self):
         """Save proxy settings."""
@@ -415,6 +432,9 @@ class SettingsScreen(ttk.Frame):
         self.app.settings_manager.set("proxy_host", self.proxy_host_entry.get())
         self.app.settings_manager.set("proxy_port", self.proxy_port_entry.get())
         self.app.settings_manager.set("proxy_type", self.proxy_type_var.get())
+        
+        # Publish SETTINGS_CHANGED event
+        self._publish_settings_changed(["proxy_enabled", "proxy_host", "proxy_port", "proxy_type"])
     
     def save_additional_options(self):
         """Save additional options."""
@@ -451,6 +471,14 @@ class SettingsScreen(ttk.Frame):
                 
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to update settings: {str(e)}")
+        
+        # Publish SETTINGS_CHANGED event
+        changed_keys = [
+            "subtitle_download", "notifications_enabled", "auto_resume", "debug_mode",
+            "extract_audio", "audio_format", "embed_thumbnail", "embed_metadata",
+            "sponsorblock_enabled", "cookies_path", "os_username", "os_password", "os_api_key"
+        ]
+        self._publish_settings_changed(changed_keys)
     
     def save_all_settings(self):
         """Save all settings."""
@@ -465,6 +493,15 @@ class SettingsScreen(ttk.Frame):
         # Save additional options (includes advanced)
         self.save_additional_options()
         
+        # Publish SETTINGS_CHANGED event for all settings
+        changed_keys = [
+            "download_directory", "proxy_enabled", "proxy_host", "proxy_port", "proxy_type",
+            "subtitle_download", "notifications_enabled", "auto_resume", "debug_mode",
+            "extract_audio", "audio_format", "embed_thumbnail", "embed_metadata",
+            "sponsorblock_enabled", "cookies_path", "os_username", "os_password", "os_api_key"
+        ]
+        self._publish_settings_changed(changed_keys)
+        
         messagebox.showinfo("Success", "All settings saved successfully!")
     
     def reset_to_defaults(self):
@@ -472,4 +509,70 @@ class SettingsScreen(ttk.Frame):
         if messagebox.askyesno("Confirm", "Reset all settings to defaults?"):
             self.app.settings_manager.reset_to_defaults()
             self.load_settings()
+            
+            # Publish SETTINGS_CHANGED event for all settings
+            self._publish_settings_changed(["all"])
+            
             messagebox.showinfo("Success", "Settings reset to defaults")
+    
+    def _publish_settings_changed(self, changed_keys):
+        """
+        Publish SETTINGS_CHANGED event to EventBus.
+        
+        Args:
+            changed_keys: List of setting keys that changed
+        """
+        if self.event_bus:
+            try:
+                # Get current values for changed settings
+                settings = {}
+                for key in changed_keys:
+                    if key == "all":
+                        # For reset to defaults, indicate all settings changed
+                        settings = {"reset": True}
+                        break
+                    elif key == "theme":
+                        settings[key] = self.app.theme_manager.get_current_theme()
+                    elif key == "download_mode":
+                        settings[key] = self.app.settings_manager.get_download_mode()
+                    elif key == "download_directory":
+                        settings[key] = self.app.settings_manager.get_download_directory()
+                    else:
+                        settings[key] = self.app.settings_manager.get(key)
+                
+                event = Event(
+                    type=EventType.SETTINGS_CHANGED,
+                    data={
+                        "changed_keys": changed_keys,
+                        "settings": settings
+                    }
+                )
+                self.event_bus.publish(event)
+                self.logger.debug(f"Published SETTINGS_CHANGED event for keys: {changed_keys}")
+            except Exception as e:
+                self.logger.error(f"Error publishing SETTINGS_CHANGED event: {e}", exc_info=True)
+    
+    def cleanup(self):
+        """
+        Cleanup method to unsubscribe from events and cancel callbacks.
+        
+        This method should be called when the screen is being destroyed or
+        when switching away from this screen to prevent memory leaks and
+        ensure proper resource cleanup.
+        """
+        self.logger.info("Cleaning up SettingsScreen")
+        
+        # Unsubscribe from all events
+        if self.event_bus:
+            for sub_id in self._subscription_ids:
+                try:
+                    self.event_bus.unsubscribe(sub_id)
+                    self.logger.debug(f"Unsubscribed from event with ID {sub_id}")
+                except Exception as e:
+                    self.logger.error(f"Error unsubscribing from event {sub_id}: {e}")
+            self._subscription_ids.clear()
+        
+        # Cleanup callbacks from SafeCallbackMixin
+        self.cleanup_callbacks()
+        
+        self.logger.info("SettingsScreen cleanup complete")
