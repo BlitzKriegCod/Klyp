@@ -49,7 +49,7 @@ class KlypVideoDownloader(ttk.Window):
         info(f"Using theme: {theme_name}")
         
         super().__init__(
-            title="Klyp - Universal Video Downloader",
+            title="Klyp",
             themename=theme_name,
             size=(1000, 700),
             resizable=(True, True)

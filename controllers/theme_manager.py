@@ -13,7 +13,7 @@ class ThemeManager:
     # Color scheme
     EMERALD_GREEN = "#10b981"
     
-    # Dark theme colors (VS Code Dark+)
+    # Dark theme colors 
     DARK_BG = "#1e1e1e"
     DARK_SECONDARY_BG = "#252526"
     DARK_TEXT = "#d4d4d4"

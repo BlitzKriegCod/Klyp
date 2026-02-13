@@ -1,10 +1,10 @@
 #!/bin/bash
-# Build script for OK.ru Video Downloader on Linux
+# Build script for Klyp on Linux
 
 set -e
 
 echo "=========================================="
-echo "OK.ru Video Downloader - Linux Build"
+echo "Klyp - Linux Build"
 echo "=========================================="
 
 # Check if Python is installed
@@ -116,8 +116,8 @@ EOF
 [Desktop Entry]
 Version=1.1.0
 Type=Application
-Name=Klyp Video Downloader
-Comment=Download videos from OK.ru
+Name=Klyp
+Comment=Video downloader application
 Exec=/usr/local/bin/${PKG_NAME}
 ${ICON_LINE}
 Terminal=false
@@ -132,8 +132,8 @@ Section: net
 Priority: optional
 Architecture: amd64
 Maintainer: Klyp Development Team
-Description: Klyp Video Downloader
- A GUI application to download videos from OK.ru (Odnoklassniki)
+Description: Klyp
+ A GUI application for downloading videos from multiple platforms
  with support for queue management, multi-threaded downloads,
  and various quality options.
 EOF

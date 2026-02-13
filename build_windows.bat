@@ -1,8 +1,8 @@
 @echo off
-REM Build script for OK.ru Video Downloader on Windows
+REM Build script for Klyp on Windows
 
 echo ==========================================
-echo OK.ru Video Downloader - Windows Build
+echo Klyp - Windows Build
 echo ==========================================
 
 REM Check if Python is installed
@@ -77,10 +77,10 @@ if /i "%CREATE_INSTALLER%"=="y" (
     REM Create Inno Setup script
     (
         echo [Setup]
-        echo AppName=Klyp Video Downloader
+        echo AppName=Klyp
         echo AppVersion=1.1.0
         echo DefaultDirName={pf}\Klyp
-        echo DefaultGroupName=Klyp Video Downloader
+        echo DefaultGroupName=Klyp
         echo OutputDir=dist
         echo OutputBaseFilename=Klyp_Setup
         echo Compression=lzma
@@ -90,12 +90,12 @@ if /i "%CREATE_INSTALLER%"=="y" (
         echo Source: "dist\Klyp\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
         echo.
         echo [Icons]
-        echo Name: "{group}\Klyp Video Downloader"; Filename: "{app}\Klyp.exe"
-        echo Name: "{group}\Uninstall Klyp Video Downloader"; Filename: "{uninstallexe}"
-        echo Name: "{commondesktop}\Klyp Video Downloader"; Filename: "{app}\Klyp.exe"
+        echo Name: "{group}\Klyp"; Filename: "{app}\Klyp.exe"
+        echo Name: "{group}\Uninstall Klyp"; Filename: "{uninstallexe}"
+        echo Name: "{commondesktop}\Klyp"; Filename: "{app}\Klyp.exe"
         echo.
         echo [Run]
-        echo Filename: "{app}\Klyp.exe"; Description: "Launch Klyp Video Downloader"; Flags: nowait postinstall skipifsilent
+        echo Filename: "{app}\Klyp.exe"; Description: "Launch Klyp"; Flags: nowait postinstall skipifsilent
     ) > installer_config.iss
     
     echo Installer script created: installer_config.iss

@@ -23,7 +23,7 @@ setup(
     name="klyp-video-downloader",
     version="1.1.0",
     author="Klyp Team",
-    description="Universal Video Downloader with a modern GUI",
+    description="Video downloader with GUI",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/yourusername/klyp",
