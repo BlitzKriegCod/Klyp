@@ -8,7 +8,7 @@
 
 [![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-beta-yellow.svg)](https://github.com/yourusername/klyp)
+[![Status](https://img.shields.io/badge/status-beta-yellow.svg)](https://github.com/BlitzKriegCod/Klyp)
 
 </div>
 
@@ -67,22 +67,21 @@ The application supports quality selection, subtitle downloads, audio extraction
 #### Queue Management
 
 - Add multiple videos to download queue
-- Pause, resume, and manage downloads
+- Manage downloads (start, stop, remove)
 - Sequential or parallel download modes (up to 3 concurrent)
 - Auto-resume interrupted downloads on restart
 - Export/import queue as JSON
 
 #### Quality & Format Control
 
-- Select video quality (4K, 1080p, 720p, 480p, etc.)
-- Extract audio only (MP3, M4A, OPUS, etc.)
+- Select video quality based on available formats (4K, 1080p, 720p, 480p, etc.)
+- Extract audio only in available formats
 - Automatic format selection for best quality
 - Custom quality preferences
 
 #### Subtitle Support
 
 - Download subtitles in multiple languages
-- Auto-generated subtitle support
 - Dedicated subtitles-only download screen
 - SRT format output
 
@@ -90,7 +89,6 @@ The application supports quality selection, subtitle downloads, audio extraction
 
 - Track all completed downloads
 - Search through download history
-- View download statistics
 - Quick access to downloaded files
 
 #### Advanced Options
@@ -125,8 +123,8 @@ The application supports quality selection, subtitle downloads, audio extraction
 1. **Clone the repository**
 
 ```bash
-git clone https://github.com/yourusername/klyp.git
-cd klyp
+git clone https://github.com/BlitzKriegCod/Klyp.git
+cd Klyp
 ```
 
 2. **Install dependencies**
@@ -151,8 +149,8 @@ sudo apt update
 sudo apt install python3 python3-pip
 
 # Clone and setup
-git clone https://github.com/yourusername/klyp.git
-cd klyp
+git clone https://github.com/BlitzKriegCod/Klyp.git
+cd Klyp
 pip3 install -r requirements.txt
 
 # Run
@@ -165,8 +163,8 @@ python3 main.py
 # Ensure Python 3.8+ is installed from python.org
 
 # Clone and setup
-git clone https://github.com/yourusername/klyp.git
-cd klyp
+git clone https://github.com/BlitzKriegCod/Klyp.git
+cd Klyp
 pip install -r requirements.txt
 
 # Run
@@ -180,13 +178,15 @@ python main.py
 brew install python@3.11
 
 # Clone and setup
-git clone https://github.com/yourusername/klyp.git
+git clone https://github.com/BlitzKriegCod/Klyp.git
 cd klyp
 pip3 install -r requirements.txt
 
 # Run
 python3 main.py
 ```
+
+Note: There is no dedicated build script for macOS yet. Use the Linux build script as reference.
 
 ### Dependencies
 
@@ -315,15 +315,15 @@ Klyp uses yt-dlp as its download engine. For a complete list of supported platfo
 
 ### Quality Selection
 
-Klyp offers flexible quality options:
+Quality options depend on what's available for each video (provided by yt-dlp):
 
 - **Best**: Automatically selects highest available quality
-- **4K (2160p)**: Ultra HD quality
-- **1080p**: Full HD
-- **720p**: HD
-- **480p**: Standard definition
-- **360p**: Low quality (smaller file size)
-- **Audio Only**: Extract audio in best quality
+- **4K (2160p)**: Ultra HD quality (if available)
+- **1080p**: Full HD (if available)
+- **720p**: HD (if available)
+- **480p**: Standard definition (if available)
+- **360p**: Low quality (if available)
+- **Audio Only**: Extract audio in best available quality
 
 ### Search Features
 
@@ -344,14 +344,7 @@ Use search operators for precise results:
 - **Site-specific**: `site:youtube.com query`
 - **OR logic**: `term1 OR term2`
 
-#### Search Presets
 
-Quick filters for specific content types:
-- **Anime**: Searches anime-focused platforms
-- **Music**: Filters music platforms
-- **Gaming**: Gaming content and streams
-- **Podcasts**: Podcast episodes
-- **Education**: Educational content
 
 ### Download Management
 
@@ -361,7 +354,6 @@ Quick filters for specific content types:
 - **Stop All**: Pause all active downloads
 - **Clear Queue**: Remove all items from queue
 - **Remove Item**: Delete specific item from queue
-- **Reorder**: Drag items to change download priority
 
 #### Download Modes
 
