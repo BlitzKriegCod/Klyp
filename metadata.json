@@ -1,0 +1,8 @@
+{
+  "name": "Klyp",
+  "description": "Multi-platform video downloader, queue manager, search explorer, and subtitle downloader.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
