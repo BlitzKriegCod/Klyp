@@ -1,0 +1,6 @@
+{
+  "summary": "Implementation plan to replace all mock implementations with genuine yt-dlp process execution, hybrid DuckDuckGo/yt-dlp video search, and live OpenSubtitles REST API integration.",
+  "updatedAt": "2026-10-16T01:23:03.048295022Z",
+  "requestFeedback": true,
+  "userFacing": true
+}

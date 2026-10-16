@@ -35,6 +35,7 @@ export interface DownloadTask {
   downloaded_bytes?: number;
   total_bytes?: number;
   output_file_url?: string;
+  download_url?: string;
 }
 
 export interface DownloadHistory {

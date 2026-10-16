@@ -7,6 +7,7 @@ interface BatchCompareDialogProps {
   isOpen: boolean;
   onClose: () => void;
   onAddToQueue: (item: SearchResult) => void;
+  theme?: 'dark' | 'light';
 }
 
 export const BatchCompareDialog: React.FC<BatchCompareDialogProps> = ({
@@ -14,21 +15,29 @@ export const BatchCompareDialog: React.FC<BatchCompareDialogProps> = ({
   isOpen,
   onClose,
   onAddToQueue,
+  theme = 'dark',
 }) => {
   if (!isOpen || items.length === 0) return null;
+  const isDark = theme === 'dark';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 animate-fadeIn">
-      <div className="w-full max-w-4xl max-h-[90vh] flex flex-col rounded-xl bg-[#252526] border border-[#454545] shadow-2xl overflow-hidden text-[#d4d4d4]">
+      <div className={`w-full max-w-4xl max-h-[90vh] flex flex-col rounded-xl border shadow-2xl overflow-hidden transition-colors ${
+        isDark ? 'bg-[#252526] border-[#454545] text-[#d4d4d4]' : 'bg-white border-slate-200 text-slate-800'
+      }`}>
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[#3c3c3c] bg-[#1e1e1e]">
+        <div className={`flex items-center justify-between px-6 py-4 border-b ${
+          isDark ? 'bg-[#1e1e1e] border-[#3c3c3c]' : 'bg-slate-50 border-slate-200'
+        }`}>
           <div className="flex items-center gap-2">
             <Layers className="w-5 h-5 text-[#10b981]" />
-            <h3 className="font-semibold text-lg text-white">Compare Media Streams ({items.length})</h3>
+            <h3 className={`font-semibold text-lg ${isDark ? 'text-white' : 'text-slate-900'}`}>Compare Media Streams ({items.length})</h3>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-[#3c3c3c] transition-colors"
+            className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+              isDark ? 'text-gray-400 hover:text-white hover:bg-[#3c3c3c]' : 'text-slate-400 hover:text-slate-900 hover:bg-slate-200'
+            }`}
           >
             <X className="w-5 h-5" />
           </button>
@@ -40,10 +49,12 @@ export const BatchCompareDialog: React.FC<BatchCompareDialogProps> = ({
             {items.map((item) => (
               <div
                 key={item.id}
-                className="flex flex-col rounded-lg bg-[#1e1e1e] border border-[#3c3c3c] overflow-hidden"
+                className={`flex flex-col rounded-lg border overflow-hidden ${
+                  isDark ? 'bg-[#1e1e1e] border-[#3c3c3c]' : 'bg-slate-50 border-slate-200'
+                }`}
               >
                 {/* Thumbnail */}
-                <div className="relative aspect-video w-full bg-[#111]">
+                <div className="relative aspect-video w-full bg-black">
                   <img
                     src={item.thumbnail}
                     alt={item.title}
@@ -63,40 +74,42 @@ export const BatchCompareDialog: React.FC<BatchCompareDialogProps> = ({
                 {/* Details */}
                 <div className="p-4 flex-1 flex flex-col justify-between space-y-4">
                   <div>
-                    <h4 className="font-medium text-white text-sm line-clamp-2" title={item.title}>
+                    <h4 className={`font-medium text-sm line-clamp-2 ${isDark ? 'text-white' : 'text-slate-900'}`} title={item.title}>
                       {item.title}
                     </h4>
-                    <p className="text-xs text-gray-400 mt-1">{item.author}</p>
+                    <p className={`text-xs mt-1 ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>{item.author}</p>
                   </div>
 
-                  <div className="space-y-2 text-xs border-t border-[#2a2a2b] pt-3">
+                  <div className={`space-y-2 text-xs border-t pt-3 ${isDark ? 'border-[#2a2a2b]' : 'border-slate-200'}`}>
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Category:</span>
-                      <span className="font-medium text-gray-200">{item.platform_category}</span>
+                      <span className={isDark ? 'text-gray-400' : 'text-slate-500'}>Category:</span>
+                      <span className={`font-medium ${isDark ? 'text-gray-200' : 'text-slate-700'}`}>{item.platform_category}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Views:</span>
-                      <span className="font-medium text-gray-200">
+                      <span className={isDark ? 'text-gray-400' : 'text-slate-500'}>Views:</span>
+                      <span className={`font-medium ${isDark ? 'text-gray-200' : 'text-slate-700'}`}>
                         {item.view_count ? item.view_count.toLocaleString() : 'N/A'}
                       </span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Likes:</span>
-                      <span className="font-medium text-gray-200">
+                      <span className={isDark ? 'text-gray-400' : 'text-slate-500'}>Likes:</span>
+                      <span className={`font-medium ${isDark ? 'text-gray-200' : 'text-slate-700'}`}>
                         {item.like_count ? item.like_count.toLocaleString() : 'N/A'}
                       </span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Uploaded:</span>
-                      <span className="font-medium text-gray-200">{item.upload_date || 'Recent'}</span>
+                      <span className={isDark ? 'text-gray-400' : 'text-slate-500'}>Uploaded:</span>
+                      <span className={`font-medium ${isDark ? 'text-gray-200' : 'text-slate-700'}`}>{item.upload_date || 'Recent'}</span>
                     </div>
                     <div>
-                      <span className="text-gray-400 block mb-1">Qualities:</span>
+                      <span className={`block mb-1 ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>Qualities:</span>
                       <div className="flex flex-wrap gap-1">
                         {(item.available_qualities || ['1080p', '720p', 'Audio Only']).map((q) => (
                           <span
                             key={q}
-                            className="px-1.5 py-0.5 rounded bg-[#2a2a2b] text-[10px] text-gray-300"
+                            className={`px-1.5 py-0.5 rounded text-[10px] ${
+                              isDark ? 'bg-[#2a2a2b] text-gray-300' : 'bg-slate-200 text-slate-700'
+                            }`}
                           >
                             {q}
                           </span>
@@ -118,7 +131,9 @@ export const BatchCompareDialog: React.FC<BatchCompareDialogProps> = ({
                       href={item.url}
                       target="_blank"
                       rel="noreferrer"
-                      className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md bg-[#2a2a2b] hover:bg-[#3c3c3c] text-gray-300 hover:text-white text-xs transition-colors"
+                      className={`w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-colors ${
+                        isDark ? 'bg-[#2a2a2b] hover:bg-[#3c3c3c] text-gray-300 hover:text-white' : 'bg-slate-200 hover:bg-slate-300 text-slate-700 hover:text-slate-900'
+                      }`}
                     >
                       <ExternalLink className="w-3 h-3" />
                       Open Stream Link
@@ -131,10 +146,14 @@ export const BatchCompareDialog: React.FC<BatchCompareDialogProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end px-6 py-3 border-t border-[#3c3c3c] bg-[#1e1e1e]">
+        <div className={`flex items-center justify-end px-6 py-3 border-t ${
+          isDark ? 'bg-[#1e1e1e] border-[#3c3c3c]' : 'bg-slate-50 border-slate-200'
+        }`}>
           <button
             onClick={onClose}
-            className="px-4 py-1.5 rounded-lg text-sm font-medium text-gray-400 hover:text-white hover:bg-[#3c3c3c]"
+            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+              isDark ? 'text-gray-400 hover:text-white hover:bg-[#3c3c3c]' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+            }`}
           >
             Close Comparison
           </button>

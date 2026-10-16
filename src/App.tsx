@@ -21,6 +21,23 @@ export const App: React.FC = () => {
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('home');
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const [history, setHistory] = useState<DownloadHistory[]>(loadHistory);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('klyp_sidebar_collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleSidebar = () => {
+    setIsSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('klyp_sidebar_collapsed', String(next));
+      } catch {}
+      return next;
+    });
+  };
 
   // Queue state
   const [queue, setQueue] = useState<DownloadTask[]>(() => {
@@ -91,78 +108,148 @@ export const App: React.FC = () => {
     setTimeout(() => setToastMessage(null), 4000);
   };
 
-  // Download Loop Simulation & Progress Driver
+  // Helper to trigger server-side yt-dlp execution
+  const startServerDownload = async (task: DownloadTask) => {
+    try {
+      const isAudio = task.video_info.selected_quality?.toLowerCase().includes('audio') || settings.extract_audio;
+      const formatMatch = task.video_info.selected_quality?.match(/audio\s*\(([^)]+)\)/i);
+      const audioFmt = formatMatch ? formatMatch[1].toLowerCase() : settings.audio_format;
+
+      await fetch('/api/download/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          taskId: task.id,
+          url: task.video_info.url,
+          quality: task.video_info.selected_quality,
+          extractAudio: isAudio,
+          audioFormat: audioFmt || 'mp3',
+          embedThumbnail: settings.embed_thumbnail,
+          embedMetadata: settings.embed_metadata,
+          sponsorblock: settings.sponsorblock_enabled,
+          subtitleDownload: task.video_info.download_subtitles || settings.subtitle_download,
+          proxy: settings.proxy_enabled ? `${settings.proxy_type}://${settings.proxy_host}:${settings.proxy_port}` : ''
+        })
+      });
+    } catch (e) {
+      console.error('[Klyp] Error starting server download:', e);
+    }
+  };
+
+  // Helper to cancel server process
+  const cancelServerDownload = async (taskId: string) => {
+    try {
+      await fetch('/api/download/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId })
+      });
+    } catch (e) {
+      console.error('[Klyp] Error cancelling server download:', e);
+    }
+  };
+
+  // Real Download Engine Status Polling & Queue Scheduler
   useEffect(() => {
-    const timer = setInterval(() => {
-      setQueue((prevQueue) => {
-        const downloadingTasks = prevQueue.filter((t) => t.status === 'downloading');
+    const timer = setInterval(async () => {
+      // 1. Check active downloading tasks
+      const downloading = queue.filter((t) => t.status === 'downloading');
 
-        // Check if we should auto-start queued tasks according to sequential/parallel setting
-        const maxConcurrent = settings.download_mode === 'parallel' ? settings.max_concurrent : 1;
-
-        if (downloadingTasks.length < maxConcurrent) {
-          const nextQueued = prevQueue.find((t) => t.status === 'queued');
-          if (nextQueued) {
-            // Auto-start next
-            return prevQueue.map((t) =>
+      // Auto-start queued tasks according to sequential or parallel mode
+      const maxConcurrent = settings.download_mode === 'parallel' ? settings.max_concurrent : 1;
+      if (downloading.length < maxConcurrent) {
+        const nextQueued = queue.find((t) => t.status === 'queued');
+        if (nextQueued) {
+          startServerDownload(nextQueued);
+          setQueue((prev) =>
+            prev.map((t) =>
               t.id === nextQueued.id
-                ? { ...t, status: 'downloading', speed: '3.5 MB/s', eta: '00:25' }
+                ? { ...t, status: 'downloading', speed: 'Starting...', eta: '--:--' }
                 : t
+            )
+          );
+          return;
+        }
+      }
+
+      if (downloading.length === 0) return;
+
+      // 2. Poll server for real yt-dlp progress
+      for (const task of downloading) {
+        try {
+          const res = await fetch(`/api/download/status/${task.id}`);
+          if (res.ok) {
+            const data = await res.json();
+
+            setQueue((prev) =>
+              prev.map((t) => {
+                if (t.id !== task.id) return t;
+
+                if (data.status === 'completed') {
+                  const fileSize = data.fileSize || 15000000;
+                  const fileSizeFormatted = `${(fileSize / (1024 * 1024)).toFixed(1)} MB`;
+
+                  // Save into history
+                  const histItem: DownloadHistory = {
+                    id: `hist-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                    video_info: t.video_info,
+                    download_path: t.download_path,
+                    completed_at: new Date().toISOString(),
+                    file_size: fileSize,
+                    file_size_formatted: fileSizeFormatted,
+                    media_url: data.outputFileUrl || '/api/media/sample'
+                  };
+                  setHistory((prevH) => addToHistory(histItem));
+                  showToast(`✓ Completed download: "${t.video_info.title}"`);
+
+                  return {
+                    ...t,
+                    status: 'completed',
+                    progress: 100,
+                    speed: 'Finished',
+                    eta: '00:00',
+                    output_file_url: data.outputFileUrl,
+                    download_url: data.downloadUrl,
+                    completed_at: new Date().toISOString()
+                  };
+                }
+
+                if (data.status === 'failed') {
+                  showToast(`✗ Download failed: "${t.video_info.title}"`);
+                  return {
+                    ...t,
+                    status: 'failed',
+                    speed: '0 MB/s',
+                    error_message: data.errorMessage || 'Download error'
+                  };
+                }
+
+                if (data.status === 'stopped') {
+                  return {
+                    ...t,
+                    status: 'stopped',
+                    speed: '0 MB/s'
+                  };
+                }
+
+                // Still downloading
+                return {
+                  ...t,
+                  progress: typeof data.progress === 'number' ? data.progress : t.progress,
+                  speed: data.speed || t.speed,
+                  eta: data.eta || t.eta
+                };
+              })
             );
           }
+        } catch (e) {
+          console.error('[Klyp] Error polling download status:', e);
         }
-
-        if (downloadingTasks.length === 0) return prevQueue;
-
-        let hasCompletedAny = false;
-        const updated = prevQueue.map((task) => {
-          if (task.status !== 'downloading') return task;
-
-          const step = Math.random() * 5 + 4; // 4-9% step per tick
-          const nextProgress = Math.min(100, task.progress + step);
-          const remainingSecs = Math.max(1, Math.round((100 - nextProgress) / 4));
-          const eta = `00:${remainingSecs.toString().padStart(2, '0')}`;
-          const currentSpeed = `${(Math.random() * 1.5 + 2.8).toFixed(1)} MB/s`;
-
-          if (nextProgress >= 100) {
-            hasCompletedAny = true;
-            // Record completed in history
-            const histItem: DownloadHistory = {
-              id: `hist-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-              video_info: task.video_info,
-              download_path: task.download_path,
-              completed_at: new Date().toISOString(),
-              file_size: Math.floor(Math.random() * 35000000 + 15000000),
-              file_size_formatted: `${(Math.random() * 35 + 15).toFixed(1)} MB`,
-              media_url: '/api/media/sample'
-            };
-            setHistory((prevH) => addToHistory(histItem));
-            showToast(`✓ Completed download: "${task.video_info.title}"`);
-
-            return {
-              ...task,
-              progress: 100,
-              status: 'completed' as const,
-              speed: '0 MB/s',
-              eta: 'Done',
-              completed_at: new Date().toISOString()
-            };
-          }
-
-          return {
-            ...task,
-            progress: nextProgress,
-            speed: currentSpeed,
-            eta
-          };
-        });
-
-        return updated;
-      });
+      }
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [settings.download_mode, settings.max_concurrent]);
+  }, [queue, settings]);
 
   // URL extraction & quality dialog trigger
   const handleAddUrlToQueue = async (url: string) => {
@@ -254,6 +341,7 @@ export const App: React.FC = () => {
   };
 
   const handleStopAll = () => {
+    queue.filter((t) => t.status === 'downloading').forEach((t) => cancelServerDownload(t.id));
     setQueue((prev) =>
       prev.map((t) => (t.status === 'downloading' ? { ...t, status: 'stopped', speed: '0 MB/s' } : t))
     );
@@ -261,12 +349,17 @@ export const App: React.FC = () => {
   };
 
   const handleStartTask = (taskId: string) => {
-    setQueue((prev) =>
-      prev.map((t) => (t.id === taskId ? { ...t, status: 'downloading', speed: '3.2 MB/s' } : t))
-    );
+    const task = queue.find((t) => t.id === taskId);
+    if (task) {
+      startServerDownload(task);
+      setQueue((prev) =>
+        prev.map((t) => (t.id === taskId ? { ...t, status: 'downloading', speed: 'Starting...' } : t))
+      );
+    }
   };
 
   const handleStopTask = (taskId: string) => {
+    cancelServerDownload(taskId);
     setQueue((prev) =>
       prev.map((t) => (t.id === taskId ? { ...t, status: 'stopped', speed: '0 MB/s' } : t))
     );
@@ -330,13 +423,19 @@ export const App: React.FC = () => {
         }}
         onOpenHealth={() => setHealthModalOpen(true)}
         downloadDir={settings.download_directory}
+        isCollapsed={isSidebarCollapsed}
+        onToggleCollapse={toggleSidebar}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 p-6 lg:p-8 overflow-y-auto max-h-screen">
         {/* Toast alert */}
         {toastMessage && (
-          <div className="fixed top-5 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-lg bg-[#252526] border border-[#10b981] text-white shadow-2xl animate-fadeIn">
+          <div className={`fixed top-5 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-lg border shadow-2xl animate-fadeIn ${
+            settings.theme === 'dark'
+              ? 'bg-[#252526] border-[#10b981] text-white'
+              : 'bg-white border-[#10b981] text-slate-900 shadow-xl'
+          }`}>
             <span className="w-2 h-2 rounded-full bg-[#10b981] animate-ping" />
             <span className="text-sm font-medium">{toastMessage}</span>
           </div>
@@ -359,6 +458,7 @@ export const App: React.FC = () => {
             onPreviewMedia={(title, url, thumb) =>
               setMediaPlayer({ open: true, title, url, thumb })
             }
+            theme={settings.theme}
           />
         )}
 
@@ -378,16 +478,17 @@ export const App: React.FC = () => {
               setMediaPlayer({
                 open: true,
                 title: task.video_info.title,
-                url: '/api/media/sample',
+                url: task.output_file_url || '/api/media/sample',
                 thumb: task.video_info.thumbnail
               })
             }
             downloadMode={settings.download_mode}
             maxConcurrent={settings.max_concurrent}
+            theme={settings.theme}
           />
         )}
 
-        {currentScreen === 'subtitles' && <SubtitlesScreen />}
+        {currentScreen === 'subtitles' && <SubtitlesScreen theme={settings.theme} settings={settings} />}
 
         {currentScreen === 'history' && (
           <HistoryScreen
@@ -405,6 +506,7 @@ export const App: React.FC = () => {
             onPlayMedia={(title, url, thumb) =>
               setMediaPlayer({ open: true, title, url, thumb })
             }
+            theme={settings.theme}
           />
         )}
 
@@ -429,6 +531,7 @@ export const App: React.FC = () => {
           videoInfo={qualityDialog.videoInfo}
           onClose={() => setQualityDialog({ open: false, videoInfo: null })}
           onConfirm={handleConfirmAddQueue}
+          theme={settings.theme}
         />
       )}
 
@@ -440,6 +543,7 @@ export const App: React.FC = () => {
         onAddToQueue={(item) => {
           handleSearchAddToQueue(item);
         }}
+        theme={settings.theme}
       />
 
       {/* Series Detection Dialog */}
@@ -449,6 +553,7 @@ export const App: React.FC = () => {
           item={seriesDialog.item}
           onClose={() => setSeriesDialog({ open: false, item: null })}
           onAddEpisodes={handleAddEpisodesToQueue}
+          theme={settings.theme}
         />
       )}
 
@@ -456,6 +561,7 @@ export const App: React.FC = () => {
       <PlatformHealthModal
         isOpen={healthModalOpen}
         onClose={() => setHealthModalOpen(false)}
+        theme={settings.theme}
       />
 
       {/* Media Player Modal */}
@@ -465,6 +571,7 @@ export const App: React.FC = () => {
         mediaTitle={mediaPlayer.title}
         mediaUrl={mediaPlayer.url}
         thumbnailUrl={mediaPlayer.thumb}
+        theme={settings.theme}
       />
     </div>
   );

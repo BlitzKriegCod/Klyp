@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="512"
+   height="512"
+   viewBox="0 0 512 512"
+   version="1.1"
+   id="svg12"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <!-- Stylized Emerald K + Play Motif without dark background -->
+  <g
+     id="g28407"
+     transform="matrix(1.485875,0,0,1.4559656,-103.36337,-154.87491)">
+    <g
+       aria-label="K"
+       id="text4052-7"
+       style="font-size:215.505px;line-height:1.25;fill:#10b981;stroke-width:5.38764"
+       transform="translate(29.475197,19.89454)">
+      <path
+         d="M 157.42769,317.71674 H 125.10194 V 166.86323 h 32.32575 v 58.61736 h 14.86984 l 33.19543,-65.5408 h 28.421 l -35.75583,79.76413 38.5754,78.01282 H 201.1752 l -28.87767,-59.9104 h -14.86984 z"
+         id="path28409" />
+    </g>
+    <g
+       aria-label="p"
+       id="text4052-7-6"
+       style="font-size:215.505px;line-height:1.25;fill:#10b981;stroke-width:5.38764"
+       transform="translate(-50.243113,1.6904759)">
+      <path
+         d="m 323.77589,310.65103 h 26.0761 v -26.07611 h -26.0761 z m 56.89332,-56.24681 v 84.26246 h -56.89332 v 34.2653 H 292.95867 V 254.40422 Z"
+         id="path28418" />
+    </g>
+  </g>
+</svg>
