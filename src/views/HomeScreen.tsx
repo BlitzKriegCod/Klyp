@@ -9,7 +9,8 @@ import {
   CheckCircle,
   AlertCircle,
   Loader2,
-  Sparkles
+  Sparkles,
+  Disc3
 } from 'lucide-react';
 import { DownloadTask } from '../types';
 import { ScreenType } from '../components/Sidebar';
@@ -72,6 +73,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const completedCount = queue.filter((t) => t.status === 'completed').length;
 
   const quickActions: { label: string; screen: ScreenType; icon: React.ReactNode; desc: string }[] = [
+    {
+      label: 'Music & Albums',
+      screen: 'music',
+      icon: <Disc3 className="w-5 h-5 text-emerald-400" />,
+      desc: 'Discographies, high-res art & FLAC/MP3'
+    },
     {
       label: 'Search Videos',
       screen: 'search',
@@ -193,18 +200,45 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         {/* Feedback message */}
         {feedback && (
           <div
-            className={`mt-4 flex items-center gap-2 p-3 rounded-lg text-sm ${
+            className={`mt-4 flex items-start justify-between gap-3 p-3.5 rounded-lg text-sm transition-all animate-fadeIn ${
               feedback.type === 'success'
                 ? 'bg-[#10b981]/15 border border-[#10b981]/30 text-[#10b981]'
-                : 'bg-red-500/15 border border-red-500/30 text-red-500'
+                : 'bg-red-500/10 border border-red-500/30 text-red-400'
             }`}
           >
-            {feedback.type === 'success' ? (
-              <CheckCircle className="w-4 h-4 shrink-0" />
-            ) : (
-              <AlertCircle className="w-4 h-4 shrink-0" />
+            <div className="flex items-start gap-2.5 min-w-0">
+              {feedback.type === 'success' ? (
+                <CheckCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              ) : (
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-500" />
+              )}
+              <div className="min-w-0">
+                <p className="font-medium text-sm leading-tight">
+                  {feedback.type === 'success' ? 'Extraction Successful' : 'Backend Extraction Notice'}
+                </p>
+                <p className={`text-xs mt-1 break-words ${feedback.type === 'success' ? 'text-[#10b981]/90' : isDark ? 'text-gray-300' : 'text-slate-700'}`}>
+                  {feedback.message}
+                </p>
+              </div>
+            </div>
+            {feedback.type === 'error' && (
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleSubmit()}
+                  className="px-2.5 py-1 text-xs font-semibold rounded bg-red-500/20 hover:bg-red-500/30 text-red-300 transition-colors cursor-pointer"
+                >
+                  Retry
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFeedback(null)}
+                  className="text-gray-400 hover:text-white text-xs px-1 cursor-pointer"
+                >
+                  Dismiss
+                </button>
+              </div>
             )}
-            <span>{feedback.message}</span>
           </div>
         )}
       </div>

@@ -3,6 +3,9 @@
  * Faithful TypeScript translation of models/data_models.py
  */
 
+export * from './music';
+import type { MusicTrack } from './music';
+
 export type DownloadStatus = 'queued' | 'downloading' | 'completed' | 'failed' | 'stopped';
 
 export interface VideoInfo {
@@ -10,6 +13,7 @@ export interface VideoInfo {
   title: string;
   thumbnail: string;
   duration: number | string; // seconds or formatted string
+  duration_formatted?: string;
   author: string;
   available_qualities: string[];
   selected_quality: string;
@@ -18,7 +22,19 @@ export interface VideoInfo {
   platform?: string;
   is_playlist?: boolean;
   playlist_count?: number;
+  entries?: any[];
   format?: string;
+  // Music-specific metadata
+  is_music?: boolean;
+  music_track?: MusicTrack;
+  album?: string;
+  artist?: string;
+  track_number?: number;
+  total_tracks?: number;
+  release_year?: number;
+  genre?: string;
+  audio_format?: 'mp3' | 'flac' | 'aac' | 'opus';
+  artwork_url?: string;
 }
 
 export interface DownloadTask {
@@ -36,6 +52,7 @@ export interface DownloadTask {
   total_bytes?: number;
   output_file_url?: string;
   download_url?: string;
+  is_music?: boolean;
 }
 
 export interface DownloadHistory {
@@ -75,6 +92,7 @@ export interface SearchResult {
   is_part_of_series?: boolean;
   series_name?: string;
   episode_number?: number;
+  entries?: any[];
 }
 
 export interface SubtitleItem {

@@ -14,6 +14,7 @@ export const PlatformHealthModal: React.FC<PlatformHealthModalProps> = ({
   theme = 'dark',
 }) => {
   const [platforms, setPlatforms] = useState<PlatformHealth[]>([]);
+  const [ytdlpVersion, setYtdlpVersion] = useState<string>('2026.08.19');
   const [loading, setLoading] = useState<boolean>(true);
   const isDark = theme === 'dark';
 
@@ -23,6 +24,9 @@ export const PlatformHealthModal: React.FC<PlatformHealthModalProps> = ({
       const res = await fetch('/api/platform-health');
       const data = await res.json();
       setPlatforms(data.platforms || []);
+      if (data.ytdlp_version) {
+        setYtdlpVersion(data.ytdlp_version);
+      }
     } catch {
       // Fallback data
       setPlatforms([
@@ -133,7 +137,7 @@ export const PlatformHealthModal: React.FC<PlatformHealthModalProps> = ({
         <div className={`flex items-center justify-between px-6 py-3 border-t text-xs ${
           isDark ? 'bg-[#1e1e1e] border-[#3c3c3c] text-gray-400' : 'bg-slate-50 border-slate-200 text-slate-500'
         }`}>
-          <span>Backend engine: yt-dlp 2026.08.19 + ffmpeg 4.4.2</span>
+          <span>Backend engine: yt-dlp {ytdlpVersion} + ffmpeg operational</span>
           <button
             onClick={onClose}
             className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors cursor-pointer ${

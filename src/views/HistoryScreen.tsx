@@ -176,10 +176,17 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
                             </div>
                           )}
                           <div className="min-w-0">
-                            <p className={`font-medium truncate ${isDark ? 'text-white' : 'text-slate-900'}`} title={item.video_info.title}>
-                              {item.video_info.title}
+                            <p className={`font-medium truncate flex items-center gap-1.5 ${isDark ? 'text-white' : 'text-slate-900'}`} title={item.video_info.title}>
+                              {item.video_info.is_music && (
+                                <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 shrink-0">
+                                  MUSIC
+                                </span>
+                              )}
+                              <span className="truncate">{item.video_info.title}</span>
                             </p>
-                            <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>{item.video_info.author}</p>
+                            <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
+                              {item.video_info.album ? `${item.video_info.author} • ${item.video_info.album}` : item.video_info.author}
+                            </p>
                           </div>
                         </div>
                       </td>

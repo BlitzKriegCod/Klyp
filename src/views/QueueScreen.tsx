@@ -259,10 +259,17 @@ export const QueueScreen: React.FC<QueueScreenProps> = ({
                             </div>
                           )}
                           <div className="min-w-0">
-                            <p className={`font-medium truncate ${isDark ? 'text-white' : 'text-slate-900'}`} title={task.video_info.title}>
-                              {task.video_info.title || task.video_info.url}
+                            <p className={`font-medium truncate flex items-center gap-1.5 ${isDark ? 'text-white' : 'text-slate-900'}`} title={task.video_info.title}>
+                              {(task.is_music || task.video_info.is_music) && (
+                                <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 shrink-0">
+                                  MUSIC
+                                </span>
+                              )}
+                              <span className="truncate">{task.video_info.title || task.video_info.url}</span>
                             </p>
-                            <p className={`text-xs font-mono truncate ${isDark ? 'text-gray-500' : 'text-slate-400'}`}>{task.video_info.url}</p>
+                            <p className={`text-xs font-mono truncate ${isDark ? 'text-gray-500' : 'text-slate-400'}`}>
+                              {task.video_info.album ? `${task.video_info.author} • ${task.video_info.album}` : task.video_info.url}
+                            </p>
                           </div>
                         </div>
                       </td>

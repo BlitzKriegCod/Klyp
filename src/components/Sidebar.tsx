@@ -11,10 +11,11 @@ import {
   Moon,
   FolderOpen,
   PanelLeftClose,
-  PanelLeft
+  PanelLeft,
+  Disc3
 } from 'lucide-react';
 
-export type ScreenType = 'home' | 'search' | 'queue' | 'subtitles' | 'history' | 'settings';
+export type ScreenType = 'home' | 'music' | 'search' | 'queue' | 'subtitles' | 'history' | 'settings';
 
 interface SidebarProps {
   currentScreen: ScreenType;
@@ -45,6 +46,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const navItems: { id: ScreenType; label: string; icon: React.ReactNode; badge?: number }[] = [
     { id: 'home', label: 'Home', icon: <Home className="w-5 h-5" /> },
+    { id: 'music', label: 'Music & Albums', icon: <Disc3 className="w-5 h-5" /> },
     { id: 'search', label: 'Search Videos', icon: <Search className="w-5 h-5" /> },
     {
       id: 'queue',

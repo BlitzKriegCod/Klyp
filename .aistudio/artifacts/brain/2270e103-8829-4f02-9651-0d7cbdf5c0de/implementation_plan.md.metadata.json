@@ -1,6 +1,6 @@
 {
-  "summary": "Implementation plan to replace all mock implementations with genuine yt-dlp process execution, hybrid DuckDuckGo/yt-dlp video search, and live OpenSubtitles REST API integration.",
-  "updatedAt": "2026-10-16T01:23:03.048295022Z",
+  "summary": "Implementation plan for the dedicated Music & Discography Downloader in Klyp. Outlines sidebar navigation separation, hybrid iTunes and MusicBrainz metadata integration, discography grouping (Studio Albums, EPs, Singles), 30-second audio previews, tracklist batch selection, and high-fidelity MP3/FLAC download engine with embedded high-resolution album art and ID3v2/FLAC Vorbis tags.",
+  "updatedAt": "2026-10-17T03:22:19.273380864Z",
   "requestFeedback": true,
   "userFacing": true
 }

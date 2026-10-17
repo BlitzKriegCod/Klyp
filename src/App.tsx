@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Sidebar, ScreenType } from './components/Sidebar';
 import { HomeScreen } from './views/HomeScreen';
+import { MusicScreen } from './views/MusicScreen';
 import { SearchScreen } from './views/SearchScreen';
 import { QueueScreen } from './views/QueueScreen';
 import { SubtitlesScreen } from './views/SubtitlesScreen';
@@ -11,7 +12,7 @@ import { BatchCompareDialog } from './components/BatchCompareDialog';
 import { SeriesDialog } from './components/SeriesDialog';
 import { PlatformHealthModal } from './components/PlatformHealthModal';
 import { MediaPlayerModal } from './components/MediaPlayerModal';
-import { DownloadTask, DownloadHistory, AppSettings, SearchResult, VideoInfo } from './types';
+import { DownloadTask, DownloadHistory, AppSettings, SearchResult, VideoInfo, MusicTrack } from './types';
 import { loadSettings, saveSettings } from './controllers/settingsController';
 import { loadHistory, saveHistory, addToHistory, removeFromHistory, clearAllHistory } from './controllers/historyController';
 
@@ -110,6 +111,11 @@ export const App: React.FC = () => {
 
   // Helper to trigger server-side yt-dlp execution
   const startServerDownload = async (task: DownloadTask) => {
+    // If it's a music task, it is already handled by the music batch engine
+    if (task.is_music || task.video_info.is_music) {
+      return;
+    }
+
     try {
       const isAudio = task.video_info.selected_quality?.toLowerCase().includes('audio') || settings.extract_audio;
       const formatMatch = task.video_info.selected_quality?.match(/audio\s*\(([^)]+)\)/i);
@@ -133,6 +139,80 @@ export const App: React.FC = () => {
       });
     } catch (e) {
       console.error('[Klyp] Error starting server download:', e);
+    }
+  };
+
+  // Helper for batch queuing music tracks with embedded tags and album art
+  const handleQueueBatchMusicTracks = async (
+    tracks: MusicTrack[],
+    format: 'mp3' | 'flac',
+    quality: '320kbps' | 'lossless'
+  ) => {
+    try {
+      const res = await fetch('/api/music/download/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          format,
+          quality,
+          tracks: tracks.map((t) => ({
+            id: t.id,
+            title: t.title,
+            artist: t.artist,
+            album: t.album,
+            trackNumber: t.trackNumber,
+            totalTracks: t.totalTracks,
+            releaseYear: t.releaseDate ? new Date(t.releaseDate).getFullYear() : 2024,
+            genre: t.genre,
+            artworkUrl: t.artworkUrl,
+            durationMs: t.durationMs,
+            previewUrl: t.previewUrl
+          }))
+        })
+      });
+
+      if (!res.ok) throw new Error('Failed to dispatch music batch');
+      const data = await res.json();
+      const serverTasks: Array<{ taskId: string; title: string; artist: string; album: string; fileName: string }> = data.tasks || [];
+
+      const newTasks: DownloadTask[] = serverTasks.map((st, idx) => {
+        const origTrack = tracks[idx] || tracks.find((t) => t.title === st.title);
+        return {
+          id: st.taskId,
+          video_info: {
+            url: origTrack?.previewUrl || `music://${encodeURIComponent(st.artist)}/${encodeURIComponent(st.title)}`,
+            title: `${st.artist} - ${st.title}`,
+            thumbnail: origTrack?.artworkUrl || '',
+            duration: origTrack?.durationFormatted || '03:30',
+            duration_formatted: origTrack?.durationFormatted || '03:30',
+            author: st.artist,
+            available_qualities: [`Audio (${format.toUpperCase()} ${quality})`],
+            selected_quality: `Audio (${format.toUpperCase()} ${quality})`,
+            download_subtitles: false,
+            platform: 'iTunes Music',
+            format: format,
+            is_music: true,
+            album: st.album,
+            artist: st.artist,
+            track_number: origTrack?.trackNumber,
+            total_tracks: origTrack?.totalTracks,
+            release_year: origTrack?.releaseDate ? new Date(origTrack.releaseDate).getFullYear() : 2024,
+            genre: origTrack?.genre,
+            audio_format: format
+          },
+          status: 'downloading',
+          progress: 20,
+          speed: 'Encoding & Tagging...',
+          eta: '--:--',
+          download_path: `${settings.download_directory}/Music/${st.artist}/${st.album}`,
+          created_at: new Date().toISOString(),
+          is_music: true
+        };
+      });
+
+      setQueue((prev) => [...newTasks, ...prev]);
+    } catch (err: any) {
+      showToast(err.message || 'Failed to dispatch music batch');
     }
   };
 
@@ -251,7 +331,7 @@ export const App: React.FC = () => {
     return () => clearInterval(timer);
   }, [queue, settings]);
 
-  // URL extraction & quality dialog trigger
+  // URL extraction & quality / series dialog trigger
   const handleAddUrlToQueue = async (url: string) => {
     const res = await fetch('/api/extract', {
       method: 'POST',
@@ -259,9 +339,35 @@ export const App: React.FC = () => {
       body: JSON.stringify({ url })
     });
     if (!res.ok) {
-      throw new Error('Unable to extract media metadata');
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || 'Unable to extract media metadata');
     }
     const info: VideoInfo = await res.json();
+
+    // If it's a playlist or series with multiple entries, open the series / playlist selector
+    if (info.is_playlist && info.entries && info.entries.length > 1) {
+      setSeriesDialog({
+        open: true,
+        item: {
+          id: info.url,
+          url: info.url,
+          title: info.title,
+          author: info.author,
+          duration: info.duration_formatted || String(info.duration) || 'Unknown',
+          thumbnail: info.thumbnail || '',
+          platform: info.platform || 'Streaming',
+          platform_category: 'Playlist',
+          platform_icon: '📑',
+          platform_color: '#10b981',
+          available_qualities: info.available_qualities,
+          is_part_of_series: true,
+          series_name: info.title,
+          entries: info.entries
+        }
+      });
+      return;
+    }
+
     setQualityDialog({ open: true, videoInfo: info });
   };
 
@@ -308,18 +414,18 @@ export const App: React.FC = () => {
   };
 
   // From Series Dialog
-  const handleAddEpisodesToQueue = (episodes: { title: string; episodeNumber: number; url: string; duration?: string }[]) => {
+  const handleAddEpisodesToQueue = (episodes: { title: string; episodeNumber: number; url: string; duration?: string; thumbnail?: string; author?: string }[]) => {
     const newTasks: DownloadTask[] = episodes.map((ep, idx) => ({
       id: `task-ep-${Date.now()}-${idx}`,
       video_info: {
         url: ep.url,
         title: ep.title,
-        thumbnail: `https://picsum.photos/seed/ep${ep.episodeNumber}/480/270`,
-        duration: ep.duration || '24:00',
-        author: 'Series Channel',
-        available_qualities: ['1080p', '720p'],
+        thumbnail: ep.thumbnail || '',
+        duration: ep.duration || 'Unknown',
+        author: ep.author || 'Series Channel',
+        available_qualities: ['1080p', '720p', 'Audio Only (MP3)'],
         selected_quality: '1080p',
-        download_subtitles: true,
+        download_subtitles: false,
         platform: 'Streaming'
       },
       status: 'queued',
@@ -329,7 +435,7 @@ export const App: React.FC = () => {
     }));
 
     setQueue((prev) => [...prev, ...newTasks]);
-    showToast(`Queued ${episodes.length} episodes!`);
+    showToast(`Queued ${episodes.length} items to download!`);
   };
 
   // Queue Operations
@@ -447,6 +553,14 @@ export const App: React.FC = () => {
             queue={queue}
             onAddUrlToQueue={handleAddUrlToQueue}
             theme={settings.theme}
+          />
+        )}
+
+        {currentScreen === 'music' && (
+          <MusicScreen
+            theme={settings.theme}
+            onQueueBatchTracks={handleQueueBatchMusicTracks}
+            showToast={showToast}
           />
         )}
 

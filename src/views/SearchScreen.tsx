@@ -71,9 +71,16 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     'Spotify',
   ];
 
-  const performSearch = async (overrideQuery?: string, overrideDomain?: string) => {
+  const performSearch = async (
+    overrideQuery?: string,
+    overrideDomain?: string,
+    overrideQuality?: string,
+    overrideFormat?: string
+  ) => {
     const q = overrideQuery ?? query;
     const dom = overrideDomain ?? domain;
+    const qual = overrideQuality ?? qualityFilter;
+    const fmt = overrideFormat ?? formatFilter;
     if (!q.trim()) return;
 
     setLoading(true);
@@ -85,6 +92,8 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         body: JSON.stringify({
           query: q,
           site: dom === 'All' ? undefined : dom,
+          quality: qual === 'Any' ? undefined : qual,
+          format: fmt === 'Any' ? undefined : fmt,
           region,
           limit: 18,
         }),
@@ -93,6 +102,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       setResults(data.results || []);
     } catch (e) {
       console.error('Search failed:', e);
+      setResults([]);
     } finally {
       setLoading(false);
     }
@@ -283,7 +293,10 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
             <label className={`block mb-1 ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>Quality Filter:</label>
             <select
               value={qualityFilter}
-              onChange={(e) => setQualityFilter(e.target.value)}
+              onChange={(e) => {
+                setQualityFilter(e.target.value);
+                performSearch(query, domain, e.target.value, formatFilter);
+              }}
               className={`w-full px-2.5 py-1.5 rounded-md border focus:outline-none focus:border-[#10b981] ${
                 isDark ? 'bg-[#1e1e1e] border-[#454545] text-gray-200' : 'bg-slate-50 border-slate-300 text-slate-800'
               }`}
@@ -300,7 +313,10 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
             <label className={`block mb-1 ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>Format Filter:</label>
             <select
               value={formatFilter}
-              onChange={(e) => setFormatFilter(e.target.value)}
+              onChange={(e) => {
+                setFormatFilter(e.target.value);
+                performSearch(query, domain, qualityFilter, e.target.value);
+              }}
               className={`w-full px-2.5 py-1.5 rounded-md border focus:outline-none focus:border-[#10b981] ${
                 isDark ? 'bg-[#1e1e1e] border-[#454545] text-gray-200' : 'bg-slate-50 border-slate-300 text-slate-800'
               }`}
@@ -317,9 +333,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       <div className={`flex items-center justify-between text-xs px-1 ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
         <span>
           {loading
-            ? 'Searching DuckDuckGo and platform extractors...'
+            ? 'Searching live platforms and extractors...'
             : hasSearched
-            ? `Found ${results.length} results for "${query}"`
+            ? `Found ${results.length} real results for "${query}"`
             : 'Enter query above to search'}
         </span>
         {selectedForCompare.size > 0 && (
@@ -333,15 +349,47 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       {loading ? (
         <div className="flex flex-col items-center justify-center py-20 space-y-3">
           <Loader2 className="w-8 h-8 animate-spin text-[#10b981]" />
-          <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>Fetching high quality metadata...</p>
+          <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>Fetching real platform streams...</p>
         </div>
       ) : results.length === 0 ? (
-        <div className={`rounded-xl border p-12 text-center space-y-3 ${
+        <div className={`rounded-xl border p-12 text-center space-y-4 max-w-lg mx-auto ${
           isDark ? 'bg-[#252526] border-[#3c3c3c] text-gray-400' : 'bg-white border-slate-200 text-slate-500 shadow-sm'
         }`}>
-          <Search className="w-10 h-10 mx-auto text-gray-400" />
-          <p className={`text-base font-medium ${isDark ? 'text-gray-300' : 'text-slate-700'}`}>No results found</p>
-          <p className="text-xs">Try different keywords or switch the domain filter to "All".</p>
+          <div className="w-12 h-12 rounded-full mx-auto flex items-center justify-center bg-gray-500/10 text-gray-400">
+            <Search className="w-6 h-6" />
+          </div>
+          <div>
+            <p className={`text-base font-semibold ${isDark ? 'text-white' : 'text-slate-800'}`}>
+              No live videos found
+            </p>
+            <p className="text-xs mt-1">
+              No matching media was discovered for "{query}" with current platform or format filters.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+            <button
+              onClick={() => {
+                setDomain('All');
+                setQualityFilter('Any');
+                setFormatFilter('Any');
+                performSearch(query, 'All', 'Any', 'Any');
+              }}
+              className="px-3 py-1.5 rounded-lg bg-[#10b981] hover:bg-[#059669] text-white text-xs font-semibold shadow transition-colors cursor-pointer"
+            >
+              Reset All Filters
+            </button>
+            <button
+              onClick={() => {
+                setDomain('YouTube');
+                performSearch(query, 'YouTube', qualityFilter, formatFilter);
+              }}
+              className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${
+                isDark ? 'border-[#3c3c3c] hover:bg-[#333] text-gray-300' : 'border-slate-300 hover:bg-slate-100 text-slate-700'
+              }`}
+            >
+              Search YouTube
+            </button>
+          </div>
         </div>
       ) : viewMode === 'grid' ? (
         /* Grid Cards View */
