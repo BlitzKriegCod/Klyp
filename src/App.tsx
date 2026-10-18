@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Sidebar, ScreenType } from './components/Sidebar';
+import { MobileNavBar } from './components/MobileNavBar';
 import { HomeScreen } from './views/HomeScreen';
 import { MusicScreen } from './views/MusicScreen';
 import { SearchScreen } from './views/SearchScreen';
@@ -371,6 +372,55 @@ export const App: React.FC = () => {
     setQualityDialog({ open: true, videoInfo: info });
   };
 
+  // Batch URLs extraction and auto-enqueue
+  const handleBatchAddUrlsToQueue = async (urls: string[]): Promise<{ success: number; failed: number; errors?: { url: string; error: string }[] }> => {
+    const cleanUrls = urls
+      .map((u) => u.trim())
+      .filter((u) => u.startsWith('http://') || u.startsWith('https://'));
+
+    if (cleanUrls.length === 0) {
+      throw new Error('No valid HTTP/HTTPS URLs found in batch');
+    }
+
+    const res = await fetch('/api/extract/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ urls: cleanUrls })
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || 'Failed to process batch URLs');
+    }
+
+    const data = await res.json();
+    const results: VideoInfo[] = data.results || [];
+
+    if (results.length > 0) {
+      const newTasks: DownloadTask[] = results.map((info, idx) => ({
+        id: `task-batch-${Date.now()}-${idx}`,
+        video_info: {
+          ...info,
+          selected_quality: info.selected_quality || '1080p',
+          download_subtitles: false
+        },
+        status: 'queued',
+        progress: 0,
+        download_path: `${settings.download_directory}/${(info.title || `media_${Date.now()}_${idx}`).replace(/[^a-zA-Z0-9_-]/g, '_')}.mp4`,
+        created_at: new Date().toISOString()
+      }));
+
+      setQueue((prev) => [...newTasks, ...prev]);
+      showToast(`Added ${results.length} batch items to download queue!`);
+    }
+
+    return {
+      success: results.length,
+      failed: (data.errors || []).length,
+      errors: data.errors
+    };
+  };
+
   const handleConfirmAddQueue = (
     quality: string,
     downloadSubs: boolean,
@@ -534,7 +584,7 @@ export const App: React.FC = () => {
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 p-6 lg:p-8 overflow-y-auto max-h-screen">
+      <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto max-h-screen pb-24 md:pb-8">
         {/* Toast alert */}
         {toastMessage && (
           <div className={`fixed top-5 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-lg border shadow-2xl animate-fadeIn ${
@@ -551,7 +601,14 @@ export const App: React.FC = () => {
           <HomeScreen
             onNavigate={setCurrentScreen}
             queue={queue}
+            history={history}
             onAddUrlToQueue={handleAddUrlToQueue}
+            onBatchAddUrlsToQueue={handleBatchAddUrlsToQueue}
+            onStartTask={handleStartTask}
+            onStopTask={handleStopTask}
+            onPlayMedia={(title, url, thumb) =>
+              setMediaPlayer({ open: true, title, url, thumb })
+            }
             theme={settings.theme}
           />
         )}
@@ -686,6 +743,20 @@ export const App: React.FC = () => {
         mediaUrl={mediaPlayer.url}
         thumbnailUrl={mediaPlayer.thumb}
         theme={settings.theme}
+      />
+
+      {/* Mobile Floating Navigation Bar */}
+      <MobileNavBar
+        currentScreen={currentScreen}
+        onNavigate={setCurrentScreen}
+        queueCount={queue.length}
+        theme={settings.theme}
+        onToggleTheme={() => {
+          const next = settings.theme === 'dark' ? 'light' : 'dark';
+          setSettings((s) => ({ ...s, theme: next }));
+          saveSettings({ ...settings, theme: next });
+        }}
+        onOpenHealth={() => setHealthModalOpen(true)}
       />
     </div>
   );

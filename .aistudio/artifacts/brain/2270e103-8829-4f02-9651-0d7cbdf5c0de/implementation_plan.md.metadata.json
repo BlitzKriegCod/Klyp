@@ -1,6 +1,6 @@
 {
-  "summary": "Implementation plan for the dedicated Music & Discography Downloader in Klyp. Outlines sidebar navigation separation, hybrid iTunes and MusicBrainz metadata integration, discography grouping (Studio Albums, EPs, Singles), 30-second audio previews, tracklist batch selection, and high-fidelity MP3/FLAC download engine with embedded high-resolution album art and ID3v2/FLAC Vorbis tags.",
-  "updatedAt": "2026-10-17T03:22:19.273380864Z",
+  "summary": "Implementation plan for auditing and upgrading the Home screen and backend server with batch multi-line URL support, clipboard integration, live transfer and recent download widgets, and actionable error handling.",
+  "updatedAt": "2026-10-18T02:09:02.939623303Z",
   "requestFeedback": true,
   "userFacing": true
 }

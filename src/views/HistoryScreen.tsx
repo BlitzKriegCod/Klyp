@@ -7,10 +7,13 @@ import {
   Download,
   RotateCcw,
   Film,
-  Music,
+  Disc3,
   FileDown
 } from 'lucide-react';
 import { DownloadHistory, VideoInfo } from '../types';
+import { PageHeader } from '../components/common/PageHeader';
+import { SurfaceCard } from '../components/common/SurfaceCard';
+import { EmptyState } from '../components/common/EmptyState';
 
 interface HistoryScreenProps {
   history: DownloadHistory[];
@@ -70,209 +73,290 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className={`text-2xl font-bold tracking-tight flex items-center gap-2 ${isDark ? 'text-white' : 'text-slate-900'}`}>
-            <History className="w-6 h-6 text-[#10b981]" />
-            Download History
-          </h1>
-          <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
-            Track and play previously downloaded video and audio files
-          </p>
-        </div>
+      {/* 1. Standardized PageHeader */}
+      <PageHeader
+        icon={<History className="w-6 h-6" />}
+        title="Download History"
+        description="Inspect, play, and re-enqueue previously downloaded videos and audio"
+        badge={history.length > 0 ? { text: `${history.length} Downloads`, variant: 'neutral' } : undefined}
+        theme={theme}
+        actionSlot={
+          <div className="flex items-center gap-2">
+            <button
+              onClick={exportHistory}
+              disabled={history.length === 0}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium disabled:opacity-40 transition-colors cursor-pointer ${
+                isDark
+                  ? 'bg-[#252526] hover:bg-[#2d2d2d] border-[#2d2d2d] text-gray-300'
+                  : 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700 shadow-xs'
+              }`}
+            >
+              <FileDown className="w-3.5 h-3.5" />
+              <span>Export</span>
+            </button>
 
-        {/* Global Controls */}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={exportHistory}
-            disabled={history.length === 0}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium disabled:opacity-40 transition-colors cursor-pointer ${
-              isDark ? 'bg-[#252526] hover:bg-[#333] border-[#3c3c3c] text-gray-300' : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-700 shadow-xs'
-            }`}
-          >
-            <FileDown className="w-3.5 h-3.5" />
-            Export History
-          </button>
+            <button
+              onClick={onClearHistory}
+              disabled={history.length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600/80 hover:bg-red-600 text-white text-xs font-medium disabled:opacity-40 transition-colors cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Clear</span>
+            </button>
+          </div>
+        }
+      />
 
-          <button
-            onClick={onClearHistory}
-            disabled={history.length === 0}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600/80 hover:bg-red-600 text-white text-xs font-medium disabled:opacity-40 transition-colors cursor-pointer"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            Clear History
-          </button>
-        </div>
-      </div>
-
-      {/* Search Filter Bar Card */}
-      <div className={`rounded-xl border p-4 shadow-sm transition-colors ${
-        isDark ? 'bg-[#252526] border-[#3c3c3c]' : 'bg-white border-slate-200'
-      }`}>
+      {/* 2. Search Filter Bar Card */}
+      <SurfaceCard theme={theme} className="p-4 shadow-sm">
         <div className="relative">
           <Search className={`w-4 h-4 absolute left-3.5 top-3 ${isDark ? 'text-gray-400' : 'text-slate-400'}`} />
           <input
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Filter history by title, channel, or platform..."
-            className={`w-full pl-10 pr-4 py-2 rounded-lg border text-sm focus:outline-none focus:border-[#10b981] ${
+            placeholder="Filter library by title, creator, or platform..."
+            className={`w-full pl-10 pr-4 py-2 rounded-lg border text-sm font-mono focus:outline-none focus:border-[#10b981] ${
               isDark
-                ? 'bg-[#1e1e1e] border-[#454545] text-white placeholder:text-gray-500'
+                ? 'bg-[#1e1e1e] border-[#2d2d2d] text-white placeholder:text-gray-500'
                 : 'bg-slate-50 border-slate-300 text-slate-900 placeholder:text-slate-400'
             }`}
           />
         </div>
-      </div>
+      </SurfaceCard>
 
-      {/* History Items Table Card */}
-      <div className={`rounded-xl border overflow-hidden shadow-sm transition-colors ${
-        isDark ? 'bg-[#252526] border-[#3c3c3c]' : 'bg-white border-slate-200'
-      }`}>
+      {/* 3. History Items Table & Adaptive Mobile Cards */}
+      <SurfaceCard theme={theme} className="overflow-hidden shadow-sm">
         {filtered.length === 0 ? (
-          <div className="py-20 text-center space-y-3">
-            <History className={`w-12 h-12 mx-auto ${isDark ? 'text-gray-500' : 'text-slate-400'}`} />
-            <p className={`text-base font-medium ${isDark ? 'text-gray-300' : 'text-slate-700'}`}>
-              {searchTerm ? 'No history matching your filter' : 'No download history yet'}
-            </p>
-            <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
-              Completed downloads will automatically be recorded here for instant access.
-            </p>
-          </div>
+          <EmptyState
+            icon={<History className="w-6 h-6" />}
+            title={searchTerm ? 'No matching records' : 'No download history yet'}
+            description="Completed video and audio transfers will automatically be recorded here."
+            theme={theme}
+          />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead className={`border-b text-xs uppercase ${
-                isDark ? 'bg-[#1e1e1e] border-[#3c3c3c] text-gray-400' : 'bg-slate-100 border-slate-200 text-slate-500'
-              }`}>
-                <tr>
-                  <th className="py-3 px-5">Media Title</th>
-                  <th className="py-3 px-4">Platform</th>
-                  <th className="py-3 px-4">Size</th>
-                  <th className="py-3 px-4">Quality / Format</th>
-                  <th className="py-3 px-4">Finished At</th>
-                  <th className="py-3 px-4 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className={`divide-y ${isDark ? 'divide-[#333]' : 'divide-slate-200'}`}>
-                {filtered.map((item) => {
-                  const isAudio = item.video_info.selected_quality?.toLowerCase().includes('audio');
-                  return (
-                    <tr key={item.id} className={`transition-colors ${isDark ? 'hover:bg-[#2a2a2b]' : 'hover:bg-slate-50'}`}>
-                      <td className="py-3 px-5 max-w-sm">
-                        <div className="flex items-center gap-3">
-                          {item.video_info.thumbnail ? (
-                            <img
-                              src={item.video_info.thumbnail}
-                              alt=""
-                              className="w-14 h-9 object-cover rounded bg-black shrink-0"
-                            />
-                          ) : (
-                            <div className={`w-14 h-9 rounded flex items-center justify-center shrink-0 ${
-                              isDark ? 'bg-[#333]' : 'bg-slate-200'
-                            }`}>
-                              {isAudio ? <Music className="w-4 h-4 text-gray-400" /> : <Film className="w-4 h-4 text-gray-400" />}
+          <>
+            {/* Desktop View: High Density Table */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className={`border-b text-xs uppercase ${
+                  isDark ? 'bg-[#1e1e1e] border-[#2d2d2d] text-gray-400' : 'bg-slate-100 border-slate-200 text-slate-500'
+                }`}>
+                  <tr>
+                    <th className="py-3 px-5">Media Title</th>
+                    <th className="py-3 px-4">Platform</th>
+                    <th className="py-3 px-4">Size</th>
+                    <th className="py-3 px-4">Quality / Format</th>
+                    <th className="py-3 px-4">Finished At</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className={`divide-y ${isDark ? 'divide-[#2d2d2d]' : 'divide-slate-200'}`}>
+                  {filtered.map((item) => {
+                    const isAudio = item.video_info.selected_quality?.toLowerCase().includes('audio') || item.video_info.is_music;
+
+                    return (
+                      <tr key={item.id} className={`transition-colors ${isDark ? 'hover:bg-[#1e1e1e]' : 'hover:bg-slate-50'}`}>
+                        <td className="py-3 px-5 max-w-sm">
+                          <div className="flex items-center gap-3">
+                            {item.video_info.thumbnail ? (
+                              <img
+                                src={item.video_info.thumbnail}
+                                alt=""
+                                className="w-14 h-9 object-cover rounded bg-black shrink-0 border border-white/5"
+                              />
+                            ) : (
+                              <div className={`w-14 h-9 rounded flex items-center justify-center shrink-0 border ${
+                                isDark ? 'bg-[#1e1e1e] border-[#2d2d2d]' : 'bg-slate-200 border-slate-300'
+                              }`}>
+                                {isAudio ? <Disc3 className="w-4 h-4 text-emerald-400" /> : <Film className="w-4 h-4 text-gray-400" />}
+                              </div>
+                            )}
+                            <div className="min-w-0">
+                              <p className={`font-medium text-xs sm:text-sm truncate ${isDark ? 'text-white' : 'text-slate-900'}`} title={item.video_info.title}>
+                                {item.video_info.title}
+                              </p>
+                              {/* Zero-pill typographic metadata */}
+                              <div className={`text-xs font-mono truncate mt-0.5 flex items-center gap-1.5 ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
+                                <span>{item.video_info.author}</span>
+                                {item.video_info.album && (
+                                  <>
+                                    <span>·</span>
+                                    <span className="text-[#10b981]">{item.video_info.album}</span>
+                                  </>
+                                )}
+                              </div>
                             </div>
-                          )}
-                          <div className="min-w-0">
-                            <p className={`font-medium truncate flex items-center gap-1.5 ${isDark ? 'text-white' : 'text-slate-900'}`} title={item.video_info.title}>
-                              {item.video_info.is_music && (
-                                <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 shrink-0">
-                                  MUSIC
-                                </span>
-                              )}
-                              <span className="truncate">{item.video_info.title}</span>
-                            </p>
-                            <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
-                              {item.video_info.album ? `${item.video_info.author} • ${item.video_info.album}` : item.video_info.author}
-                            </p>
                           </div>
-                        </div>
-                      </td>
+                        </td>
 
-                      <td className="py-3 px-4 whitespace-nowrap">
-                        <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-[#10b981]/15 text-[#10b981]">
+                        <td className="py-3 px-4 whitespace-nowrap text-xs font-medium text-[#10b981]">
                           {item.video_info.platform || 'Web Stream'}
-                        </span>
-                      </td>
+                        </td>
 
-                      <td className={`py-3 px-4 whitespace-nowrap font-mono text-xs ${isDark ? 'text-gray-300' : 'text-slate-600'}`}>
-                        {item.file_size_formatted || `${(item.file_size / (1024 * 1024)).toFixed(1)} MB`}
-                      </td>
+                        <td className={`py-3 px-4 whitespace-nowrap font-mono text-xs tabular-nums ${isDark ? 'text-gray-300' : 'text-slate-600'}`}>
+                          {item.file_size_formatted || `${(item.file_size / (1024 * 1024)).toFixed(1)} MB`}
+                        </td>
 
-                      <td className="py-3 px-4 whitespace-nowrap text-xs">
-                        <span className={`px-2 py-0.5 rounded border ${
-                          isDark ? 'bg-[#1e1e1e] border-[#3c3c3c] text-gray-300' : 'bg-slate-100 border-slate-200 text-slate-700'
-                        }`}>
+                        <td className="py-3 px-4 whitespace-nowrap text-xs font-mono text-gray-400">
                           {item.video_info.selected_quality}
-                        </span>
-                      </td>
+                        </td>
 
-                      <td className={`py-3 px-4 whitespace-nowrap text-xs ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
-                        {formatDate(item.completed_at)}
-                      </td>
+                        <td className={`py-3 px-4 whitespace-nowrap text-xs font-mono ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
+                          {formatDate(item.completed_at)}
+                        </td>
 
-                      <td className="py-3 px-4 text-right whitespace-nowrap">
-                        <div className="inline-flex items-center gap-1.5">
-                          {/* Play in Modal Player */}
-                          <button
-                            onClick={() =>
-                              onPlayMedia(
-                                item.video_info.title,
-                                item.media_url || item.video_info.url,
-                                item.video_info.thumbnail
-                              )
-                            }
-                            className="p-1.5 rounded-md bg-[#10b981]/20 hover:bg-[#10b981]/30 text-[#10b981] transition-colors cursor-pointer"
-                            title="Play in Media Player"
-                          >
-                            <Play className="w-3.5 h-3.5 fill-current" />
-                          </button>
+                        <td className="py-3 px-4 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center gap-1.5">
+                            {/* Play in Modal Player */}
+                            <button
+                              onClick={() =>
+                                onPlayMedia(
+                                  item.video_info.title,
+                                  item.media_url || item.video_info.url,
+                                  item.video_info.thumbnail
+                                )
+                              }
+                              className="p-1.5 rounded-lg bg-[#10b981]/20 hover:bg-[#10b981]/30 text-[#10b981] transition-colors cursor-pointer"
+                              title="Play Media"
+                            >
+                              <Play className="w-3.5 h-3.5 fill-current" />
+                            </button>
 
-                          {/* Direct file download */}
-                          <a
-                            href={item.media_url || '/api/media/sample'}
-                            download={`${item.video_info.title}.mp4`}
-                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${
-                              isDark ? 'bg-[#1e1e1e] hover:bg-[#333] text-gray-300 hover:text-white' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                            }`}
-                            title="Download File to Computer"
-                          >
-                            <Download className="w-3.5 h-3.5" />
-                          </a>
+                            {/* Direct file download */}
+                            <a
+                              href={item.media_url || '/api/media/sample'}
+                              download={`${item.video_info.title}.mp4`}
+                              className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
+                                isDark ? 'bg-[#1e1e1e] hover:bg-[#282828] border-[#2d2d2d] text-gray-300' : 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700'
+                              }`}
+                              title="Save to Disk"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                            </a>
 
-                          {/* Re-add to queue */}
-                          <button
-                            onClick={() => onRequeue(item.video_info)}
-                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${
-                              isDark ? 'bg-[#1e1e1e] hover:bg-[#333] text-gray-300 hover:text-white' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                            }`}
-                            title="Download Again"
-                          >
-                            <RotateCcw className="w-3.5 h-3.5" />
-                          </button>
+                            {/* Re-add to queue */}
+                            <button
+                              onClick={() => onRequeue(item.video_info)}
+                              className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
+                                isDark ? 'bg-[#1e1e1e] hover:bg-[#282828] border-[#2d2d2d] text-gray-300' : 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700'
+                              }`}
+                              title="Download Again"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5" />
+                            </button>
 
-                          {/* Remove */}
-                          <button
-                            onClick={() => onRemoveHistoryItem(item.id)}
-                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${
-                              isDark ? 'bg-[#1e1e1e] hover:bg-red-600/30 text-gray-400 hover:text-red-400' : 'bg-slate-100 hover:bg-red-100 text-slate-400 hover:text-red-600'
-                            }`}
-                            title="Delete Record"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                            {/* Remove */}
+                            <button
+                              onClick={() => onRemoveHistoryItem(item.id)}
+                              className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
+                                isDark ? 'bg-[#1e1e1e] hover:bg-red-500/20 border-[#2d2d2d] text-gray-400 hover:text-red-400' : 'bg-slate-100 hover:bg-red-50 border-slate-300 text-slate-400 hover:text-red-600'
+                              }`}
+                              title="Delete Record"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile View: Adaptive Card Stack */}
+            <div className="block md:hidden divide-y divide-[#2d2d2d] p-3 space-y-3">
+              {filtered.map((item) => {
+                const isAudio = item.video_info.selected_quality?.toLowerCase().includes('audio') || item.video_info.is_music;
+
+                return (
+                  <div
+                    key={item.id}
+                    className={`p-3.5 rounded-xl border flex flex-col gap-2.5 transition-colors ${
+                      isDark ? 'bg-[#1e1e1e] border-[#2d2d2d]' : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      {item.video_info.thumbnail ? (
+                        <img
+                          src={item.video_info.thumbnail}
+                          alt=""
+                          className="w-16 h-11 rounded-lg object-cover bg-black shrink-0 border border-white/5"
+                        />
+                      ) : (
+                        <div className={`w-16 h-11 rounded-lg flex items-center justify-center shrink-0 border ${
+                          isDark ? 'bg-[#252526] border-[#2d2d2d]' : 'bg-slate-200 border-slate-300'
+                        }`}>
+                          {isAudio ? <Disc3 className="w-5 h-5 text-emerald-400" /> : <Film className="w-5 h-5 text-gray-400" />}
                         </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                      )}
+
+                      <div className="min-w-0 flex-1">
+                        <h4 className={`text-xs font-bold truncate ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                          {item.video_info.title}
+                        </h4>
+                        <div className="text-[11px] font-mono text-gray-400 truncate mt-0.5">
+                          {item.video_info.author}
+                        </div>
+                        <div className="flex items-center gap-2 mt-1 text-[10px] font-mono text-gray-400">
+                          <span className="text-[#10b981]">{item.video_info.platform || 'Stream'}</span>
+                          <span>·</span>
+                          <span>{item.file_size_formatted || `${(item.file_size / (1024 * 1024)).toFixed(1)} MB`}</span>
+                          <span>·</span>
+                          <span>{item.video_info.selected_quality}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className={`pt-2 border-t flex items-center justify-between gap-2 ${
+                      isDark ? 'border-[#2d2d2d]' : 'border-slate-200'
+                    }`}>
+                      <span className="text-[10px] font-mono text-gray-400">
+                        {formatDate(item.completed_at)}
+                      </span>
+
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() =>
+                            onPlayMedia(
+                              item.video_info.title,
+                              item.media_url || item.video_info.url,
+                              item.video_info.thumbnail
+                            )
+                          }
+                          className="p-1.5 rounded-lg bg-[#10b981]/20 text-[#10b981] cursor-pointer"
+                          title="Play"
+                        >
+                          <Play className="w-3.5 h-3.5 fill-current" />
+                        </button>
+                        <button
+                          onClick={() => onRequeue(item.video_info)}
+                          className={`p-1.5 rounded-lg border text-gray-300 cursor-pointer ${
+                            isDark ? 'border-[#2d2d2d] bg-[#252526]' : 'border-slate-300 bg-white'
+                          }`}
+                          title="Re-queue"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => onRemoveHistoryItem(item.id)}
+                          className={`p-1.5 rounded-lg border text-gray-400 hover:text-red-400 cursor-pointer ${
+                            isDark ? 'border-[#2d2d2d] bg-[#252526]' : 'border-slate-300 bg-white'
+                          }`}
+                          title="Remove"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
         )}
-      </div>
+      </SurfaceCard>
     </div>
   );
 };

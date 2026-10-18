@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Download,
   Play,
@@ -11,9 +11,15 @@ import {
   Clock,
   RotateCw,
   Film,
-  Music
+  Music,
+  MoreVertical,
+  Check,
+  Disc3
 } from 'lucide-react';
 import { DownloadTask, DownloadStatus } from '../types';
+import { PageHeader } from '../components/common/PageHeader';
+import { SurfaceCard } from '../components/common/SurfaceCard';
+import { EmptyState } from '../components/common/EmptyState';
 
 interface QueueScreenProps {
   queue: DownloadTask[];
@@ -49,6 +55,7 @@ export const QueueScreen: React.FC<QueueScreenProps> = ({
   theme = 'dark',
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
   const isDark = theme === 'dark';
 
   const activeTask = queue.find((t) => t.status === 'downloading') || queue[0];
@@ -69,35 +76,36 @@ export const QueueScreen: React.FC<QueueScreenProps> = ({
     };
     reader.readAsText(file);
     e.target.value = '';
+    setIsActionsMenuOpen(false);
   };
 
   const getStatusBadge = (status: DownloadStatus) => {
     switch (status) {
       case 'downloading':
         return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-[#10b981]/20 text-[#10b981] animate-pulse">
-            <RotateCw className="w-3 h-3 animate-spin" />
+          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-mono font-medium bg-[#10b981]/15 text-[#10b981] border border-[#10b981]/30">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] animate-ping" />
             Downloading
           </span>
         );
       case 'completed':
         return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-500">
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-mono font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
             <CheckCircle className="w-3 h-3" />
             Completed
           </span>
         );
       case 'failed':
         return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-red-500/20 text-red-500">
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-mono font-medium bg-red-500/15 text-red-400 border border-red-500/30">
             <AlertCircle className="w-3 h-3" />
             Failed
           </span>
         );
       case 'stopped':
         return (
-          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-            isDark ? 'bg-gray-500/20 text-gray-400' : 'bg-slate-200 text-slate-600'
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-mono font-medium border ${
+            isDark ? 'bg-gray-500/15 text-gray-300 border-gray-600/30' : 'bg-slate-200 text-slate-700 border-slate-300'
           }`}>
             <Pause className="w-3 h-3" />
             Paused
@@ -106,7 +114,7 @@ export const QueueScreen: React.FC<QueueScreenProps> = ({
       case 'queued':
       default:
         return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-500">
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-mono font-medium bg-amber-500/15 text-amber-400 border border-amber-500/30">
             <Clock className="w-3 h-3" />
             Queued
           </span>
@@ -116,307 +124,453 @@ export const QueueScreen: React.FC<QueueScreenProps> = ({
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
-      {/* Header & Global Controls */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-3">
-            <h1 className={`text-2xl font-bold tracking-tight flex items-center gap-2 ${isDark ? 'text-white' : 'text-slate-900'}`}>
-              <Download className="w-6 h-6 text-[#10b981]" />
-              Download Queue
-            </h1>
-            <span className={`text-xs px-2.5 py-1 rounded-full font-mono ${
-              isDark ? 'bg-[#3c3c3c] text-gray-300' : 'bg-slate-200 text-slate-700'
-            }`}>
-              {queue.length} items
-            </span>
-            <span className="text-xs px-2.5 py-1 rounded-full bg-[#10b981]/15 text-[#10b981] font-medium">
-              Mode: {downloadMode === 'parallel' ? `Parallel (${maxConcurrent} threads)` : 'Sequential'}
-            </span>
+      {/* 1. Standardized Header with Action Controls */}
+      <PageHeader
+        icon={<Download className="w-6 h-6" />}
+        title="Download Queue"
+        description="Monitor active transfers, pause, resume, and manage batch downloads"
+        badge={{
+          text: downloadMode === 'parallel' ? `Parallel (${maxConcurrent} Threads)` : 'Sequential Mode',
+          variant: 'neutral'
+        }}
+        theme={theme}
+        actionSlot={
+          <div className="flex items-center gap-2 relative">
+            {/* Primary Action Button (Hick's Law consolidation) */}
+            <button
+              onClick={onStartAll}
+              disabled={queue.length === 0}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#10b981] hover:bg-[#059669] disabled:opacity-40 text-white text-xs font-semibold shadow-md shadow-[#10b981]/20 transition-all cursor-pointer"
+            >
+              <Play className="w-3.5 h-3.5 fill-current" />
+              <span>Start All</span>
+            </button>
+
+            <button
+              onClick={onStopAll}
+              disabled={queue.length === 0}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border disabled:opacity-40 transition-colors cursor-pointer ${
+                isDark
+                  ? 'bg-[#252526] hover:bg-[#2d2d2d] border-[#2d2d2d] text-gray-200'
+                  : 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700 shadow-xs'
+              }`}
+            >
+              <Pause className="w-3.5 h-3.5" />
+              <span>Pause</span>
+            </button>
+
+            {/* Queue Options Dropdown Menu (Hick's Law reduction) */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsActionsMenuOpen((prev) => !prev)}
+                className={`p-2 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${
+                  isDark
+                    ? 'bg-[#252526] hover:bg-[#2d2d2d] border-[#2d2d2d] text-gray-300'
+                    : 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700 shadow-xs'
+                }`}
+                title="More Queue Options"
+              >
+                <MoreVertical className="w-4 h-4" />
+              </button>
+
+              {isActionsMenuOpen && (
+                <div
+                  className={`absolute right-0 mt-2 w-48 rounded-xl border p-1.5 shadow-2xl z-20 animate-in fade-in duration-150 ${
+                    isDark ? 'bg-[#252526] border-[#2d2d2d] text-gray-200' : 'bg-white border-slate-200 text-slate-800'
+                  }`}
+                >
+                  <button
+                    onClick={() => {
+                      fileInputRef.current?.click();
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                      isDark ? 'hover:bg-[#2d2d2d] text-gray-300' : 'hover:bg-slate-100 text-slate-700'
+                    }`}
+                  >
+                    <Upload className="w-3.5 h-3.5 text-blue-400" />
+                    <span>Import Queue JSON</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      onExportQueue();
+                      setIsActionsMenuOpen(false);
+                    }}
+                    disabled={queue.length === 0}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors cursor-pointer disabled:opacity-40 ${
+                      isDark ? 'hover:bg-[#2d2d2d] text-gray-300' : 'hover:bg-slate-100 text-slate-700'
+                    }`}
+                  >
+                    <FileDown className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Export Queue JSON</span>
+                  </button>
+
+                  <div className={`my-1 border-t ${isDark ? 'border-[#2d2d2d]' : 'border-slate-200'}`} />
+
+                  <button
+                    onClick={() => {
+                      onClearCompleted();
+                      setIsActionsMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                      isDark ? 'hover:bg-[#2d2d2d] text-amber-400' : 'hover:bg-slate-100 text-amber-600'
+                    }`}
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Clear Completed</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      onClearQueue();
+                      setIsActionsMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                      isDark ? 'hover:bg-red-500/20 text-red-400' : 'hover:bg-red-50 text-red-600'
+                    }`}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Clear Entire Queue</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json"
+              onChange={handleFileImport}
+              className="hidden"
+            />
           </div>
-          <p className={`text-sm mt-1 ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
-            Manage active transfers, pause, resume, and export batch queues
-          </p>
-        </div>
+        }
+      />
 
-        {/* Action Controls Frame */}
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={onStartAll}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#10b981] hover:bg-[#059669] text-white text-xs font-semibold shadow-md shadow-[#10b981]/20 transition-all cursor-pointer"
-          >
-            <Play className="w-3.5 h-3.5 fill-current" />
-            Start All
-          </button>
-
-          <button
-            onClick={onStopAll}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-              isDark ? 'bg-[#3c3c3c] hover:bg-[#4a4a4b] text-gray-200' : 'bg-slate-200 hover:bg-slate-300 text-slate-700'
-            }`}
-          >
-            <Pause className="w-3.5 h-3.5" />
-            Pause All
-          </button>
-
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${
-              isDark ? 'bg-[#252526] hover:bg-[#333] border-[#3c3c3c] text-gray-300' : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-700 shadow-xs'
-            }`}
-          >
-            <Upload className="w-3.5 h-3.5" />
-            Import JSON
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".json"
-            onChange={handleFileImport}
-            className="hidden"
-          />
-
-          <button
-            onClick={onExportQueue}
-            disabled={queue.length === 0}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-medium disabled:opacity-40 transition-colors cursor-pointer ${
-              isDark ? 'bg-[#252526] hover:bg-[#333] border-[#3c3c3c] text-gray-300' : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-700 shadow-xs'
-            }`}
-          >
-            <FileDown className="w-3.5 h-3.5" />
-            Export JSON
-          </button>
-
-          <button
-            onClick={onClearCompleted}
-            disabled={!queue.some((q) => q.status === 'completed')}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-medium disabled:opacity-40 transition-colors cursor-pointer ${
-              isDark ? 'bg-[#252526] hover:bg-[#333] border-[#3c3c3c] text-gray-300' : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-700 shadow-xs'
-            }`}
-          >
-            Clear Finished
-          </button>
-
-          <button
-            onClick={onClearQueue}
-            disabled={queue.length === 0}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-600/80 hover:bg-red-600 text-white text-xs font-medium disabled:opacity-40 transition-colors cursor-pointer"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            Clear All
-          </button>
-        </div>
-      </div>
-
-      {/* Main Queue Table Card */}
-      <div className={`rounded-xl border overflow-hidden shadow-sm transition-colors ${
-        isDark ? 'bg-[#252526] border-[#3c3c3c]' : 'bg-white border-slate-200'
-      }`}>
+      {/* 2. Main Queue Container */}
+      <SurfaceCard theme={theme} className="overflow-hidden shadow-sm">
         {queue.length === 0 ? (
-          <div className="py-20 text-center space-y-3">
-            <Download className={`w-12 h-12 mx-auto ${isDark ? 'text-gray-500' : 'text-slate-400'}`} />
-            <p className={`text-base font-medium ${isDark ? 'text-gray-300' : 'text-slate-700'}`}>Your download queue is empty</p>
-            <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>Add video URLs from the Home screen or Search explorer.</p>
-          </div>
+          <EmptyState
+            icon={<Download className="w-6 h-6" />}
+            title="Download queue is empty"
+            description="Paste a video URL on the Home screen or browse artist discographies to enqueue downloads."
+            theme={theme}
+          />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead className={`border-b text-xs uppercase ${
-                isDark ? 'bg-[#1e1e1e] border-[#3c3c3c] text-gray-400' : 'bg-slate-100 border-slate-200 text-slate-500'
-              }`}>
-                <tr>
-                  <th className="py-3 px-4 w-12 text-center">#</th>
-                  <th className="py-3 px-4">Video Title / URL</th>
-                  <th className="py-3 px-4">Author</th>
-                  <th className="py-3 px-4">Format / Quality</th>
-                  <th className="py-3 px-4">Status</th>
-                  <th className="py-3 px-4 w-44">Progress</th>
-                  <th className="py-3 px-4 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className={`divide-y ${isDark ? 'divide-[#333]' : 'divide-slate-200'}`}>
-                {queue.map((task, idx) => {
-                  const isAudio = task.video_info.selected_quality?.toLowerCase().includes('audio');
-                  return (
-                    <tr key={task.id} className={`transition-colors ${isDark ? 'hover:bg-[#2a2a2b]' : 'hover:bg-slate-50'}`}>
-                      <td className={`py-3 px-4 text-center font-mono text-xs ${isDark ? 'text-gray-500' : 'text-slate-400'}`}>
-                        {idx + 1}
-                      </td>
+          <>
+            {/* Desktop View: High-density Tabular Grid (hidden on mobile) */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className={`border-b text-xs uppercase ${
+                  isDark ? 'bg-[#1e1e1e] border-[#2d2d2d] text-gray-400' : 'bg-slate-100 border-slate-200 text-slate-500'
+                }`}>
+                  <tr>
+                    <th className="py-3 px-4 w-12 text-center">#</th>
+                    <th className="py-3 px-4">Item Title & Metadata</th>
+                    <th className="py-3 px-4">Format / Quality</th>
+                    <th className="py-3 px-4">Status</th>
+                    <th className="py-3 px-4 w-48">Progress</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className={`divide-y ${isDark ? 'divide-[#2d2d2d]' : 'divide-slate-200'}`}>
+                  {queue.map((task, idx) => {
+                    const isAudio = task.video_info.selected_quality?.toLowerCase().includes('audio') || task.is_music;
 
-                      {/* Video Title + thumbnail */}
-                      <td className="py-3 px-4 max-w-sm">
-                        <div className="flex items-center gap-3">
-                          {task.video_info.thumbnail ? (
-                            <img
-                              src={task.video_info.thumbnail}
-                              alt=""
-                              className="w-12 h-8 rounded object-cover bg-black shrink-0"
-                            />
-                          ) : (
-                            <div className={`w-12 h-8 rounded flex items-center justify-center shrink-0 ${
-                              isDark ? 'bg-[#333]' : 'bg-slate-200'
-                            }`}>
-                              {isAudio ? <Music className="w-4 h-4 text-gray-400" /> : <Film className="w-4 h-4 text-gray-400" />}
+                    return (
+                      <tr key={task.id} className={`transition-colors ${isDark ? 'hover:bg-[#1e1e1e]' : 'hover:bg-slate-50'}`}>
+                        <td className={`py-3 px-4 text-center font-mono text-xs ${isDark ? 'text-gray-500' : 'text-slate-400'}`}>
+                          {idx + 1}
+                        </td>
+
+                        {/* Title + Thumbnail + Zero-pill metadata */}
+                        <td className="py-3 px-4 max-w-sm">
+                          <div className="flex items-center gap-3">
+                            {task.video_info.thumbnail ? (
+                              <img
+                                src={task.video_info.thumbnail}
+                                alt=""
+                                className="w-12 h-9 rounded object-cover bg-black shrink-0 border border-white/5"
+                              />
+                            ) : (
+                              <div className={`w-12 h-9 rounded flex items-center justify-center shrink-0 border ${
+                                isDark ? 'bg-[#1e1e1e] border-[#2d2d2d]' : 'bg-slate-200 border-slate-300'
+                              }`}>
+                                {isAudio ? <Disc3 className="w-4 h-4 text-emerald-400" /> : <Film className="w-4 h-4 text-gray-400" />}
+                              </div>
+                            )}
+                            <div className="min-w-0">
+                              <p className={`font-medium text-xs sm:text-sm truncate ${isDark ? 'text-white' : 'text-slate-900'}`} title={task.video_info.title}>
+                                {task.video_info.title || task.video_info.url}
+                              </p>
+                              {/* Zero-pill typographic metadata middot list */}
+                              <div className={`text-xs font-mono truncate mt-0.5 flex items-center gap-1.5 ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
+                                <span>{task.video_info.author || 'Creator'}</span>
+                                {task.video_info.album && (
+                                  <>
+                                    <span>·</span>
+                                    <span className="text-[#10b981]">{task.video_info.album}</span>
+                                  </>
+                                )}
+                              </div>
                             </div>
-                          )}
-                          <div className="min-w-0">
-                            <p className={`font-medium truncate flex items-center gap-1.5 ${isDark ? 'text-white' : 'text-slate-900'}`} title={task.video_info.title}>
-                              {(task.is_music || task.video_info.is_music) && (
-                                <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 shrink-0">
-                                  MUSIC
-                                </span>
-                              )}
-                              <span className="truncate">{task.video_info.title || task.video_info.url}</span>
-                            </p>
-                            <p className={`text-xs font-mono truncate ${isDark ? 'text-gray-500' : 'text-slate-400'}`}>
-                              {task.video_info.album ? `${task.video_info.author} • ${task.video_info.album}` : task.video_info.url}
-                            </p>
                           </div>
-                        </div>
-                      </td>
+                        </td>
 
-                      {/* Author */}
-                      <td className={`py-3 px-4 whitespace-nowrap text-xs ${isDark ? 'text-gray-300' : 'text-slate-600'}`}>
-                        {task.video_info.author || 'Creator'}
-                      </td>
+                        {/* Format */}
+                        <td className="py-3 px-4 whitespace-nowrap text-xs font-mono text-gray-400">
+                          {task.video_info.selected_quality || 'Default'}
+                        </td>
 
-                      {/* Quality */}
-                      <td className="py-3 px-4 whitespace-nowrap text-xs">
-                        <span className={`px-2 py-0.5 rounded border ${
-                          isDark ? 'bg-[#1e1e1e] border-[#3c3c3c] text-gray-300' : 'bg-slate-100 border-slate-200 text-slate-700'
-                        }`}>
-                          {task.video_info.selected_quality}
-                        </span>
-                      </td>
+                        {/* Status */}
+                        <td className="py-3 px-4 whitespace-nowrap">
+                          {getStatusBadge(task.status)}
+                        </td>
 
-                      {/* Status */}
-                      <td className="py-3 px-4 whitespace-nowrap">
-                        {getStatusBadge(task.status)}
-                      </td>
-
-                      {/* Progress Bar */}
-                      <td className="py-3 px-4">
-                        <div className="space-y-1">
-                          <div className="flex justify-between text-xs font-mono">
-                            <span className={isDark ? 'text-gray-400' : 'text-slate-500'}>{Math.round(task.progress)}%</span>
-                            {task.speed && <span className="text-[#10b981]">{task.speed}</span>}
+                        {/* Progress Bar */}
+                        <td className="py-3 px-4">
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-xs font-mono tabular-nums">
+                              <span className={isDark ? 'text-gray-400' : 'text-slate-500'}>{Math.round(task.progress)}%</span>
+                              {task.speed && <span className="text-[#10b981] font-semibold">{task.speed}</span>}
+                            </div>
+                            <div className={`w-full rounded-full h-1.5 overflow-hidden ${isDark ? 'bg-[#1e1e1e]' : 'bg-slate-200'}`}>
+                              <div
+                                className={`h-full transition-all duration-300 ${
+                                  task.status === 'completed'
+                                    ? 'bg-emerald-500'
+                                    : task.status === 'failed'
+                                    ? 'bg-red-500'
+                                    : task.status === 'stopped'
+                                    ? 'bg-gray-400'
+                                    : 'bg-[#10b981]'
+                                }`}
+                                style={{ width: `${task.progress}%` }}
+                              />
+                            </div>
                           </div>
-                          <div className={`w-full rounded-full h-2 overflow-hidden ${isDark ? 'bg-[#1e1e1e]' : 'bg-slate-200'}`}>
-                            <div
-                              className={`h-full transition-all duration-300 ${
-                                task.status === 'completed'
-                                  ? 'bg-emerald-500'
-                                  : task.status === 'failed'
-                                  ? 'bg-red-500'
-                                  : task.status === 'stopped'
-                                  ? 'bg-gray-400'
-                                  : 'bg-[#10b981]'
-                              }`}
-                              style={{ width: `${task.progress}%` }}
-                            />
-                          </div>
-                        </div>
-                      </td>
+                        </td>
 
-                      {/* Actions */}
-                      <td className="py-3 px-4 text-right whitespace-nowrap">
-                        <div className="inline-flex items-center gap-1.5">
-                          {task.status === 'downloading' ? (
-                            <button
-                              onClick={() => onStopTask(task.id)}
-                              className={`p-1.5 rounded-md transition-colors cursor-pointer ${
-                                isDark ? 'bg-[#1e1e1e] hover:bg-[#333] text-amber-400' : 'bg-slate-100 hover:bg-slate-200 text-amber-600'
-                              }`}
-                              title="Pause Download"
-                            >
-                              <Pause className="w-3.5 h-3.5" />
-                            </button>
-                          ) : task.status === 'completed' ? (
-                            <>
+                        {/* Actions */}
+                        <td className="py-3 px-4 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center gap-1.5">
+                            {task.status === 'downloading' ? (
                               <button
-                                onClick={() => onPreviewTask(task)}
-                                className="p-1.5 rounded-md bg-[#10b981]/20 hover:bg-[#10b981]/30 text-[#10b981] transition-colors cursor-pointer"
-                                title="Play Downloaded File"
+                                onClick={() => onStopTask(task.id)}
+                                className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
+                                  isDark ? 'bg-[#1e1e1e] hover:bg-[#282828] border-[#2d2d2d] text-amber-400' : 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-amber-600'
+                                }`}
+                                title="Pause Download"
+                              >
+                                <Pause className="w-3.5 h-3.5" />
+                              </button>
+                            ) : task.status === 'completed' ? (
+                              <>
+                                <button
+                                  onClick={() => onPreviewTask(task)}
+                                  className="p-1.5 rounded-lg bg-[#10b981]/20 hover:bg-[#10b981]/30 text-[#10b981] transition-colors cursor-pointer"
+                                  title="Play Media File"
+                                >
+                                  <Play className="w-3.5 h-3.5 fill-current" />
+                                </button>
+                                {task.download_url && (
+                                  <a
+                                    href={task.download_url}
+                                    download
+                                    className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
+                                      isDark ? 'bg-[#1e1e1e] hover:bg-[#282828] border-[#2d2d2d] text-[#10b981]' : 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-[#10b981]'
+                                    }`}
+                                    title="Save to Disk"
+                                  >
+                                    <FileDown className="w-3.5 h-3.5" />
+                                  </a>
+                                )}
+                              </>
+                            ) : (
+                              <button
+                                onClick={() => onStartTask(task.id)}
+                                className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
+                                  isDark ? 'bg-[#1e1e1e] hover:bg-[#282828] border-[#2d2d2d] text-[#10b981]' : 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-[#10b981]'
+                                }`}
+                                title="Start Download"
                               >
                                 <Play className="w-3.5 h-3.5 fill-current" />
                               </button>
-                              {task.download_url && (
-                                <a
-                                  href={task.download_url}
-                                  download
-                                  className={`p-1.5 rounded-md transition-colors cursor-pointer ${
-                                    isDark ? 'bg-[#1e1e1e] hover:bg-[#333] text-[#10b981]' : 'bg-slate-100 hover:bg-slate-200 text-[#10b981]'
-                                  }`}
-                                  title="Save File to Computer"
-                                >
-                                  <FileDown className="w-3.5 h-3.5" />
-                                </a>
-                              )}
-                            </>
-                          ) : (
+                            )}
+
                             <button
-                              onClick={() => onStartTask(task.id)}
-                              className={`p-1.5 rounded-md transition-colors cursor-pointer ${
-                                isDark ? 'bg-[#1e1e1e] hover:bg-[#333] text-[#10b981]' : 'bg-slate-100 hover:bg-slate-200 text-[#10b981]'
+                              onClick={() => onRemoveTask(task.id)}
+                              className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
+                                isDark ? 'bg-[#1e1e1e] hover:bg-red-500/20 border-[#2d2d2d] text-gray-400 hover:text-red-400' : 'bg-slate-100 hover:bg-red-50 border-slate-200 text-slate-400 hover:text-red-600'
                               }`}
-                              title="Start Download"
+                              title="Remove from queue"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile View: Adaptive Card Stack (eliminates horizontal overflow) */}
+            <div className="block md:hidden divide-y divide-[#2d2d2d] p-3 space-y-3">
+              {queue.map((task, idx) => {
+                const isAudio = task.video_info.selected_quality?.toLowerCase().includes('audio') || task.is_music;
+
+                return (
+                  <div
+                    key={task.id}
+                    className={`p-3.5 rounded-xl border flex flex-col gap-3 transition-colors ${
+                      isDark ? 'bg-[#1e1e1e] border-[#2d2d2d]' : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      {task.video_info.thumbnail ? (
+                        <img
+                          src={task.video_info.thumbnail}
+                          alt=""
+                          className="w-16 h-12 rounded-lg object-cover bg-black shrink-0 border border-white/5"
+                        />
+                      ) : (
+                        <div className={`w-16 h-12 rounded-lg flex items-center justify-center shrink-0 border ${
+                          isDark ? 'bg-[#252526] border-[#2d2d2d]' : 'bg-slate-200 border-slate-300'
+                        }`}>
+                          {isAudio ? <Disc3 className="w-5 h-5 text-emerald-400" /> : <Film className="w-5 h-5 text-gray-400" />}
+                        </div>
+                      )}
+
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-mono text-gray-400">#{idx + 1}</span>
+                          {getStatusBadge(task.status)}
+                        </div>
+                        <h4 className={`text-xs font-bold truncate mt-1 ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                          {task.video_info.title || task.video_info.url}
+                        </h4>
+                        <p className={`text-[11px] truncate font-mono mt-0.5 ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
+                          {task.video_info.author} {task.video_info.album ? `• ${task.video_info.album}` : ''}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Mobile Progress Bar */}
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-xs font-mono tabular-nums">
+                        <span className={isDark ? 'text-gray-400' : 'text-slate-500'}>{Math.round(task.progress)}%</span>
+                        {task.speed && <span className="text-[#10b981] font-semibold">{task.speed}</span>}
+                      </div>
+                      <div className={`w-full rounded-full h-2 overflow-hidden ${isDark ? 'bg-[#252526]' : 'bg-slate-200'}`}>
+                        <div
+                          className={`h-full transition-all duration-300 ${
+                            task.status === 'completed'
+                              ? 'bg-emerald-500'
+                              : task.status === 'failed'
+                              ? 'bg-red-500'
+                              : task.status === 'stopped'
+                              ? 'bg-gray-400'
+                              : 'bg-[#10b981]'
+                          }`}
+                          style={{ width: `${task.progress}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Mobile Touch Action Controls (min 44px height) */}
+                    <div className={`pt-2 border-t flex items-center justify-between gap-2 ${
+                      isDark ? 'border-[#2d2d2d]' : 'border-slate-200'
+                    }`}>
+                      <span className="text-[11px] font-mono text-gray-400 truncate max-w-[140px]">
+                        {task.video_info.selected_quality || 'Default'}
+                      </span>
+
+                      <div className="flex items-center gap-2">
+                        {task.status === 'downloading' ? (
+                          <button
+                            onClick={() => onStopTask(task.id)}
+                            className="px-3 py-1.5 rounded-lg bg-amber-500/20 text-amber-400 text-xs font-medium flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <Pause className="w-3.5 h-3.5" />
+                            <span>Pause</span>
+                          </button>
+                        ) : task.status === 'completed' ? (
+                          <>
+                            <button
+                              onClick={() => onPreviewTask(task)}
+                              className="px-3 py-1.5 rounded-lg bg-[#10b981]/20 text-[#10b981] text-xs font-medium flex items-center gap-1.5 cursor-pointer"
                             >
                               <Play className="w-3.5 h-3.5 fill-current" />
+                              <span>Play</span>
                             </button>
-                          )}
-
+                            {task.download_url && (
+                              <a
+                                href={task.download_url}
+                                download
+                                className="p-1.5 rounded-lg border border-[#2d2d2d] text-[#10b981] cursor-pointer"
+                              >
+                                <FileDown className="w-4 h-4" />
+                              </a>
+                            )}
+                          </>
+                        ) : (
                           <button
-                            onClick={() => onRemoveTask(task.id)}
-                            className={`p-1.5 rounded-md transition-colors cursor-pointer ${
-                              isDark ? 'bg-[#1e1e1e] hover:bg-red-600/30 text-gray-400 hover:text-red-400' : 'bg-slate-100 hover:bg-red-100 text-slate-400 hover:text-red-600'
-                            }`}
-                            title="Remove from queue"
+                            onClick={() => onStartTask(task.id)}
+                            className="px-3 py-1.5 rounded-lg bg-[#10b981] text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer"
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            <Play className="w-3.5 h-3.5 fill-current" />
+                            <span>Start</span>
                           </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+                        )}
 
-      {/* Active Download Progress Bar Footer */}
+                        <button
+                          onClick={() => onRemoveTask(task.id)}
+                          className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
+                            isDark ? 'border-[#2d2d2d] text-gray-400 hover:text-red-400' : 'border-slate-300 text-slate-500'
+                          }`}
+                          title="Remove item"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </SurfaceCard>
+
+      {/* 3. Active Transfer Sticky Bottom Info */}
       {activeTask && (
-        <div className={`rounded-xl border p-5 shadow-sm space-y-3 transition-colors ${
-          isDark ? 'bg-[#252526] border-[#3c3c3c]' : 'bg-white border-slate-200'
-        }`}>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Download className="w-4 h-4 text-[#10b981]" />
-              <h3 className={`text-sm font-semibold uppercase tracking-wider ${isDark ? 'text-gray-300' : 'text-slate-700'}`}>
-                Active Transfer: {activeTask.video_info.title || 'Downloading Video'}
+        <SurfaceCard theme={theme} className="p-4 sm:p-5 shadow-sm space-y-2.5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <Download className="w-4 h-4 text-[#10b981] shrink-0" />
+              <h3 className={`text-xs sm:text-sm font-semibold truncate ${isDark ? 'text-gray-200' : 'text-slate-700'}`}>
+                Active: {activeTask.video_info.title || 'Downloading Media'}
               </h3>
             </div>
-            <div className={`flex items-center gap-4 text-xs font-mono ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
+            <div className={`flex items-center gap-3 text-xs font-mono tabular-nums shrink-0 ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
               {activeTask.speed && <span>Speed: <strong className={isDark ? 'text-white' : 'text-slate-900'}>{activeTask.speed}</strong></span>}
               {activeTask.eta && <span>ETA: <strong className={isDark ? 'text-white' : 'text-slate-900'}>{activeTask.eta}</strong></span>}
               <span>Progress: <strong className="text-[#10b981]">{Math.round(activeTask.progress)}%</strong></span>
             </div>
           </div>
 
-          <div className={`w-full rounded-full h-3 overflow-hidden p-0.5 border ${
-            isDark ? 'bg-[#1e1e1e] border-[#3c3c3c]' : 'bg-slate-100 border-slate-200'
+          <div className={`w-full rounded-full h-2 overflow-hidden ${
+            isDark ? 'bg-[#1e1e1e]' : 'bg-slate-200'
           }`}>
             <div
-              className="bg-[#10b981] h-full rounded-full transition-all duration-300 shadow-sm"
+              className="bg-[#10b981] h-full rounded-full transition-all duration-300"
               style={{ width: `${Math.max(2, activeTask.progress)}%` }}
             />
           </div>
-
-          <div className={`flex items-center justify-between text-xs ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
-            <span>Destination: {activeTask.download_path || '~/Downloads/Klyp'}</span>
-            <span>Status: {activeTask.status.toUpperCase()}</span>
-          </div>
-        </div>
+        </SurfaceCard>
       )}
     </div>
   );

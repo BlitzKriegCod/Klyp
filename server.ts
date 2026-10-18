@@ -12,7 +12,8 @@ if (typeof dns.setDefaultResultOrder === 'function') {
 }
 
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const PORT = 3000;
+const ALT_PORT = process.env.PORT && process.env.PORT !== '3000' ? parseInt(process.env.PORT, 10) : null;
 const isProduction = process.env.NODE_ENV === 'production';
 
 app.use(cors());
@@ -133,124 +134,203 @@ function findOutputFile(prefix: string, dir = DOWNLOADS_DIR): string | null {
 }
 
 // ==========================================
-// 2. HEALTH STATUS API
+// 2. HEALTH STATUS & ENGINE METRICS API
 // ==========================================
-app.get('/api/status', async (req: Request, res: Response) => {
+async function getEngineVersion(cmd: string): Promise<string> {
+  return new Promise((resolve) => {
+    exec(`${cmd} --version`, { timeout: 3000 }, (err, stdout) => {
+      if (err) resolve('N/A');
+      else resolve(stdout.trim().split('\n')[0]);
+    });
+  });
+}
+
+const handleEngineHealth = async (req: Request, res: Response) => {
   const ytdlp = await hasBinary('yt-dlp');
   const ffmpeg = await hasBinary('ffmpeg');
+  const ytdlp_version = ytdlp ? await getEngineVersion('yt-dlp') : 'Not Installed';
+  const ffmpeg_version = ffmpeg ? await getEngineVersion('ffmpeg') : 'Not Installed';
+
   res.json({
-    status: 'operational',
+    status: ytdlp && ffmpeg ? 'operational' : 'degraded',
     ytdlp,
+    ytdlp_version,
     ffmpeg,
+    ffmpeg_version,
     download_directory: DOWNLOADS_DIR,
     active_downloads: activeDownloads.size,
     timestamp: new Date().toISOString()
   });
-});
+};
+
+app.get('/api/status', handleEngineHealth);
+app.get('/api/engine/health', handleEngineHealth);
 
 // ==========================================
-// 3. EXTRACT METADATA API (yt-dlp)
+// 3. EXTRACT METADATA API (SINGLE & BATCH)
 // ==========================================
+
+export async function extractSingleUrl(url: string): Promise<any> {
+  const platform = detectPlatform(url);
+  const hasYtDlp = await hasBinary('yt-dlp');
+
+  if (!hasYtDlp) {
+    throw new Error('yt-dlp engine is not installed or available on this host');
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('yt-dlp', [
+      '--dump-json',
+      '--flat-playlist',
+      '--socket-timeout', '12',
+      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      url
+    ]);
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    child.on('close', (code) => {
+      if (code === 0 && stdout.trim()) {
+        try {
+          const lines = stdout.trim().split('\n').filter(Boolean);
+          const firstLine = lines.find((l) => l.trim().startsWith('{')) || lines[0];
+          const firstItem = JSON.parse(firstLine);
+
+          const isPlaylist = lines.length > 1 || firstItem._type === 'playlist' || url.includes('playlist?list=');
+          const title = firstItem.title || 'Untitled Media';
+          const thumbnail = firstItem.thumbnails?.[firstItem.thumbnails.length - 1]?.url || firstItem.thumbnail || '';
+          const author = firstItem.uploader || firstItem.channel || platform.name;
+          const duration = firstItem.duration || 180;
+
+          // Available qualities
+          const qualities = ['1080p', '720p', '480p', '360p', 'Audio Only (MP3)'];
+          if (firstItem.formats) {
+            const hSet = new Set<string>();
+            firstItem.formats.forEach((f: any) => {
+              if (f.height) hSet.add(`${f.height}p`);
+            });
+            if (hSet.size > 0) {
+              const sorted = Array.from(hSet).sort((a, b) => parseInt(b) - parseInt(a));
+              qualities.splice(0, qualities.length, ...sorted, 'Audio Only (MP3)');
+            }
+          }
+
+          const entries = lines.map((line, idx) => {
+            try {
+              if (!line.trim().startsWith('{')) return null;
+              const item = JSON.parse(line);
+              return {
+                id: item.id || `item-${idx}`,
+                title: item.title || `Item ${idx + 1}`,
+                url: item.webpage_url || item.url || (item.id ? `https://www.youtube.com/watch?v=${item.id}` : url),
+                duration: item.duration ? formatDuration(item.duration) : 'Unknown',
+                author: item.uploader || author,
+                thumbnail: item.thumbnails?.[0]?.url || item.thumbnail || thumbnail
+              };
+            } catch {
+              return null;
+            }
+          }).filter(Boolean);
+
+          return resolve({
+            url,
+            title,
+            thumbnail,
+            duration,
+            duration_formatted: formatDuration(duration),
+            author,
+            platform: platform.name,
+            available_qualities: qualities,
+            selected_quality: qualities[0] || '1080p',
+            is_playlist: isPlaylist,
+            playlist_count: isPlaylist ? entries.length : 1,
+            entries: isPlaylist ? entries : []
+          });
+        } catch (e: any) {
+          return reject(new Error(`Failed to parse extracted media information: ${e.message || 'Corrupt JSON'}`));
+        }
+      }
+
+      // Extraction failed: extract real error explanation from yt-dlp stderr
+      const errorLines = stderr.trim().split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0 && !l.startsWith('Deprecated Feature:') && !l.startsWith('WARNING:'));
+
+      const rawError = errorLines.find((l) => l.startsWith('ERROR:')) || errorLines[errorLines.length - 1] || 'Unable to resolve video stream or metadata';
+      const cleanError = rawError.replace(/^ERROR:\s*(\[[^\]]+\]\s*)?/i, '').trim();
+
+      return reject(new Error(cleanError || 'Unable to extract media information from this URL'));
+    });
+
+    child.on('error', (err) => {
+      reject(new Error(`Process error: ${err.message}`));
+    });
+  });
+}
+
+// Single URL extract
 app.post('/api/extract', async (req: Request, res: Response) => {
   const { url } = req.body;
   if (!url || typeof url !== 'string') {
     return res.status(400).json({ error: 'URL is required' });
   }
 
-  const platform = detectPlatform(url);
-  const hasYtDlp = await hasBinary('yt-dlp');
-
-  if (!hasYtDlp) {
-    return res.status(503).json({ error: 'yt-dlp engine is not installed or available on this host' });
-  }
-
-  const child = spawn('yt-dlp', ['--dump-json', '--flat-playlist', '--socket-timeout', '10', url]);
-  let stdout = '';
-  let stderr = '';
-
-  child.stdout.on('data', (d) => { stdout += d.toString(); });
-  child.stderr.on('data', (d) => { stderr += d.toString(); });
-
-  child.on('close', (code) => {
-    if (code === 0 && stdout.trim()) {
-      try {
-        const lines = stdout.trim().split('\n').filter(Boolean);
-        const firstLine = lines.find((l) => l.trim().startsWith('{')) || lines[0];
-        const firstItem = JSON.parse(firstLine);
-
-        const isPlaylist = lines.length > 1 || firstItem._type === 'playlist' || url.includes('playlist?list=');
-        const title = firstItem.title || 'Untitled Media';
-        const thumbnail = firstItem.thumbnails?.[firstItem.thumbnails.length - 1]?.url || firstItem.thumbnail || '';
-        const author = firstItem.uploader || firstItem.channel || platform.name;
-        const duration = firstItem.duration || 180;
-
-        // Available qualities
-        const qualities = ['1080p', '720p', '480p', '360p', 'Audio Only (MP3)'];
-        if (firstItem.formats) {
-          const hSet = new Set<string>();
-          firstItem.formats.forEach((f: any) => {
-            if (f.height) hSet.add(`${f.height}p`);
-          });
-          if (hSet.size > 0) {
-            const sorted = Array.from(hSet).sort((a, b) => parseInt(b) - parseInt(a));
-            qualities.splice(0, qualities.length, ...sorted, 'Audio Only (MP3)');
-          }
-        }
-
-        const entries = lines.map((line, idx) => {
-          try {
-            if (!line.trim().startsWith('{')) return null;
-            const item = JSON.parse(line);
-            return {
-              id: item.id || `item-${idx}`,
-              title: item.title || `Item ${idx + 1}`,
-              url: item.webpage_url || item.url || (item.id ? `https://www.youtube.com/watch?v=${item.id}` : url),
-              duration: item.duration ? formatDuration(item.duration) : 'Unknown',
-              author: item.uploader || author,
-              thumbnail: item.thumbnails?.[0]?.url || item.thumbnail || thumbnail
-            };
-          } catch {
-            return null;
-          }
-        }).filter(Boolean);
-
-        return res.json({
-          url,
-          title,
-          thumbnail,
-          duration,
-          duration_formatted: formatDuration(duration),
-          author,
-          platform: platform.name,
-          available_qualities: qualities,
-          selected_quality: qualities[0] || '1080p',
-          is_playlist: isPlaylist,
-          playlist_count: isPlaylist ? entries.length : 1,
-          entries: isPlaylist ? entries : []
-        });
-      } catch (e: any) {
-        return res.status(422).json({
-          error: `Failed to parse extracted media information: ${e.message || 'Corrupt JSON'}`
-        });
-      }
-    }
-
-    // Extraction failed: extract real error explanation from yt-dlp stderr
-    const errorLines = stderr.trim().split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0 && !l.startsWith('Deprecated Feature:') && !l.startsWith('WARNING:'));
-
-    const rawError = errorLines.find((l) => l.startsWith('ERROR:')) || errorLines[errorLines.length - 1] || 'Unable to resolve video stream or metadata';
-    const cleanError = rawError.replace(/^ERROR:\s*(\[[^\]]+\]\s*)?/i, '').trim();
-
+  try {
+    const data = await extractSingleUrl(url.trim());
+    return res.json(data);
+  } catch (err: any) {
+    const platform = detectPlatform(url);
     return res.status(422).json({
-      error: cleanError || 'Unable to extract media information from this URL',
+      error: err.message || 'Unable to extract media information from this URL',
       platform: platform.name
     });
-  });
+  }
+});
 
-  child.on('error', (err) => {
-    return res.status(500).json({ error: `Process error: ${err.message}` });
+// Batch URLs extract
+app.post('/api/extract/batch', async (req: Request, res: Response) => {
+  const { urls } = req.body;
+  if (!Array.isArray(urls) || urls.length === 0) {
+    return res.status(400).json({ error: 'urls array is required' });
+  }
+
+  const cleanUrls = urls
+    .map((u) => (typeof u === 'string' ? u.trim() : ''))
+    .filter((u) => u.startsWith('http://') || u.startsWith('https://'))
+    .slice(0, 25); // Max 25 per batch request
+
+  if (cleanUrls.length === 0) {
+    return res.status(400).json({ error: 'No valid HTTP/HTTPS URLs found in batch' });
+  }
+
+  const results: any[] = [];
+  const errors: { url: string; error: string }[] = [];
+
+  // Process up to 4 concurrent extractions
+  const concurrency = 4;
+  for (let i = 0; i < cleanUrls.length; i += concurrency) {
+    const chunk = cleanUrls.slice(i, i + concurrency);
+    await Promise.all(
+      chunk.map(async (url) => {
+        try {
+          const item = await extractSingleUrl(url);
+          results.push(item);
+        } catch (err: any) {
+          errors.push({ url, error: err.message || 'Failed to extract' });
+        }
+      })
+    );
+  }
+
+  return res.json({
+    total: cleanUrls.length,
+    success_count: results.length,
+    error_count: errors.length,
+    results,
+    errors
   });
 });
 
@@ -1688,6 +1768,16 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Klyp] Dev Server running on http://0.0.0.0:${PORT}`);
   });
+
+  if (ALT_PORT && ALT_PORT !== PORT) {
+    try {
+      app.listen(ALT_PORT, '0.0.0.0', () => {
+        console.log(`[Klyp] Server also listening on http://0.0.0.0:${ALT_PORT}`);
+      });
+    } catch (e) {
+      console.warn(`[Klyp] Could not bind to alt port ${ALT_PORT}:`, e);
+    }
+  }
 }
 
 startServer().catch((err) => {

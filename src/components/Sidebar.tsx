@@ -61,7 +61,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside
-      className={`shrink-0 border-r flex flex-col justify-between select-none transition-all duration-300 ease-in-out ${
+      className={`shrink-0 border-r hidden md:flex flex-col justify-between select-none transition-all duration-300 ease-in-out ${
         isCollapsed ? 'w-18' : 'w-64'
       } ${
         theme === 'dark'
