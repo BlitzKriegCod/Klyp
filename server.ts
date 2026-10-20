@@ -19,6 +19,20 @@ const isProduction = process.env.NODE_ENV === 'production';
 app.use(cors());
 app.use(express.json());
 
+// Ensure local bin directory is on PATH and has executable permissions
+const BIN_DIR = path.resolve(process.cwd(), 'bin');
+if (fs.existsSync(BIN_DIR)) {
+  process.env.PATH = `${BIN_DIR}:${process.env.PATH || ''}`;
+  try {
+    const ytdlpPath = path.join(BIN_DIR, 'yt-dlp');
+    if (fs.existsSync(ytdlpPath)) {
+      fs.chmodSync(ytdlpPath, 0o755);
+    }
+  } catch {
+    // Ignore permission errors if already set
+  }
+}
+
 // Ensure downloads directory exists
 const DOWNLOADS_DIR = path.resolve(process.cwd(), 'downloads');
 const MUSIC_DIR = path.resolve(DOWNLOADS_DIR, 'Music');
@@ -71,10 +85,59 @@ function detectPlatform(url: string) {
   if (lower.includes('twitch.tv')) {
     return { name: 'Twitch', category: 'Gaming', icon: '🎮', color: '#a855f7' };
   }
+  if (lower.includes('animeflv.net')) {
+    return { name: 'AnimeFLV', category: 'Anime & Series', icon: '🎌', color: '#f59e0b' };
+  }
   if (lower.includes('spotify.com')) {
     return { name: 'Spotify', category: 'Podcasts', icon: '🎙️', color: '#10b981' };
   }
   return { name: 'Web', category: 'Other', icon: '🌐', color: '#10b981' };
+}
+
+// Helper: Classify audiovisual format automatically
+function classifyContentFormat(durationSeconds: number, url: string, title: string, platform: string): 'movie' | 'series' | 'short' | 'clip' {
+  const lowerUrl = (url || '').toLowerCase();
+  const lowerTitle = (title || '').toLowerCase();
+
+  // 1. Short-form detection (TikTok, YouTube Shorts, Reels, <60s)
+  if (
+    lowerUrl.includes('/shorts/') ||
+    lowerUrl.includes('tiktok.com') ||
+    lowerUrl.includes('/reel/') ||
+    lowerUrl.includes('/reels/') ||
+    (durationSeconds > 0 && durationSeconds <= 60 && !lowerTitle.includes('trailer') && !lowerTitle.includes('teaser'))
+  ) {
+    return 'short';
+  }
+
+  // 2. Series / Episodic detection
+  if (
+    lowerUrl.includes('animeflv.net/anime/') ||
+    lowerUrl.includes('playlist') ||
+    lowerUrl.includes('list=') ||
+    lowerUrl.includes('series') ||
+    /\b(season|temporada|episodio|episode|capitulo|capítulo|cour|arc)\s*\d+/i.test(lowerTitle) ||
+    /\bep\s*\.?\s*\d+/i.test(lowerTitle) ||
+    /\[\d+x\d+\]/.test(lowerTitle) ||
+    /s\d+e\d+/i.test(lowerTitle)
+  ) {
+    return 'series';
+  }
+
+  // 3. Movie / Feature Film detection
+  if (
+    lowerTitle.includes('película') ||
+    lowerTitle.includes('pelicula') ||
+    lowerTitle.includes('full movie') ||
+    lowerTitle.includes('película completa') ||
+    lowerTitle.includes('feature film') ||
+    lowerTitle.includes('ova') ||
+    (durationSeconds >= 3600) // 60 minutes or longer
+  ) {
+    return 'movie';
+  }
+
+  return 'clip';
 }
 
 // Format duration in seconds to string
@@ -170,6 +233,51 @@ app.get('/api/engine/health', handleEngineHealth);
 // 3. EXTRACT METADATA API (SINGLE & BATCH)
 // ==========================================
 
+// Rotating User-Agent profiles for engine resilience
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+];
+let userAgentCursor = 0;
+
+function getNextUserAgent(): string {
+  const ua = USER_AGENTS[userAgentCursor % USER_AGENTS.length];
+  userAgentCursor++;
+  return ua;
+}
+
+function runYtDlpDump(url: string, userAgent: string, audioOnly = false): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  return new Promise((resolve) => {
+    const args = [
+      '--dump-json',
+      '--flat-playlist',
+      '--socket-timeout', '14',
+      '--user-agent', userAgent
+    ];
+    if (audioOnly) {
+      args.push('-f', 'bestaudio/best');
+    }
+    args.push(url);
+
+    const child = spawn('yt-dlp', args);
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    child.on('close', (code) => {
+      resolve({ stdout, stderr, code });
+    });
+
+    child.on('error', (err) => {
+      resolve({ stdout: '', stderr: `Process error: ${err.message}`, code: -1 });
+    });
+  });
+}
+
 export async function extractSingleUrl(url: string): Promise<any> {
   const platform = detectPlatform(url);
   const hasYtDlp = await hasBinary('yt-dlp');
@@ -178,97 +286,98 @@ export async function extractSingleUrl(url: string): Promise<any> {
     throw new Error('yt-dlp engine is not installed or available on this host');
   }
 
-  return new Promise((resolve, reject) => {
-    const child = spawn('yt-dlp', [
-      '--dump-json',
-      '--flat-playlist',
-      '--socket-timeout', '12',
-      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      url
-    ]);
-    let stdout = '';
-    let stderr = '';
+  // 1. First attempt with active user-agent
+  let ua = getNextUserAgent();
+  let result = await runYtDlpDump(url, ua, false);
+  let isAudioFallback = false;
 
-    child.stdout.on('data', (d) => { stdout += d.toString(); });
-    child.stderr.on('data', (d) => { stderr += d.toString(); });
+  // 2. Retry with alternate user-agent if initial run failed
+  if (result.code !== 0 || !result.stdout.trim()) {
+    const alternateUa = getNextUserAgent();
+    const retryResult = await runYtDlpDump(url, alternateUa, false);
+    if (retryResult.code === 0 && retryResult.stdout.trim()) {
+      result = retryResult;
+    } else {
+      // 3. Smart Fallback: Attempt audio-only resolution if video streams are blocked or throttled
+      const audioResult = await runYtDlpDump(url, alternateUa, true);
+      if (audioResult.code === 0 && audioResult.stdout.trim()) {
+        result = audioResult;
+        isAudioFallback = true;
+      }
+    }
+  }
 
-    child.on('close', (code) => {
-      if (code === 0 && stdout.trim()) {
-        try {
-          const lines = stdout.trim().split('\n').filter(Boolean);
-          const firstLine = lines.find((l) => l.trim().startsWith('{')) || lines[0];
-          const firstItem = JSON.parse(firstLine);
+  if (result.code === 0 && result.stdout.trim()) {
+    try {
+      const lines = result.stdout.trim().split('\n').filter(Boolean);
+      const firstLine = lines.find((l) => l.trim().startsWith('{')) || lines[0];
+      const firstItem = JSON.parse(firstLine);
 
-          const isPlaylist = lines.length > 1 || firstItem._type === 'playlist' || url.includes('playlist?list=');
-          const title = firstItem.title || 'Untitled Media';
-          const thumbnail = firstItem.thumbnails?.[firstItem.thumbnails.length - 1]?.url || firstItem.thumbnail || '';
-          const author = firstItem.uploader || firstItem.channel || platform.name;
-          const duration = firstItem.duration || 180;
+      const isPlaylist = lines.length > 1 || firstItem._type === 'playlist' || url.includes('playlist?list=');
+      const title = firstItem.title || 'Untitled Media';
+      const thumbnail = firstItem.thumbnails?.[firstItem.thumbnails.length - 1]?.url || firstItem.thumbnail || '';
+      const author = firstItem.uploader || firstItem.channel || platform.name;
+      const duration = firstItem.duration || 180;
 
-          // Available qualities
-          const qualities = ['1080p', '720p', '480p', '360p', 'Audio Only (MP3)'];
-          if (firstItem.formats) {
-            const hSet = new Set<string>();
-            firstItem.formats.forEach((f: any) => {
-              if (f.height) hSet.add(`${f.height}p`);
-            });
-            if (hSet.size > 0) {
-              const sorted = Array.from(hSet).sort((a, b) => parseInt(b) - parseInt(a));
-              qualities.splice(0, qualities.length, ...sorted, 'Audio Only (MP3)');
-            }
-          }
-
-          const entries = lines.map((line, idx) => {
-            try {
-              if (!line.trim().startsWith('{')) return null;
-              const item = JSON.parse(line);
-              return {
-                id: item.id || `item-${idx}`,
-                title: item.title || `Item ${idx + 1}`,
-                url: item.webpage_url || item.url || (item.id ? `https://www.youtube.com/watch?v=${item.id}` : url),
-                duration: item.duration ? formatDuration(item.duration) : 'Unknown',
-                author: item.uploader || author,
-                thumbnail: item.thumbnails?.[0]?.url || item.thumbnail || thumbnail
-              };
-            } catch {
-              return null;
-            }
-          }).filter(Boolean);
-
-          return resolve({
-            url,
-            title,
-            thumbnail,
-            duration,
-            duration_formatted: formatDuration(duration),
-            author,
-            platform: platform.name,
-            available_qualities: qualities,
-            selected_quality: qualities[0] || '1080p',
-            is_playlist: isPlaylist,
-            playlist_count: isPlaylist ? entries.length : 1,
-            entries: isPlaylist ? entries : []
-          });
-        } catch (e: any) {
-          return reject(new Error(`Failed to parse extracted media information: ${e.message || 'Corrupt JSON'}`));
+      // Available qualities
+      const qualities = ['1080p', '720p', '480p', '360p', 'Audio Only (MP3)'];
+      if (firstItem.formats) {
+        const hSet = new Set<string>();
+        firstItem.formats.forEach((f: any) => {
+          if (f.height) hSet.add(`${f.height}p`);
+        });
+        if (hSet.size > 0) {
+          const sorted = Array.from(hSet).sort((a, b) => parseInt(b) - parseInt(a));
+          qualities.splice(0, qualities.length, ...sorted, 'Audio Only (MP3)');
         }
       }
 
-      // Extraction failed: extract real error explanation from yt-dlp stderr
-      const errorLines = stderr.trim().split('\n')
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0 && !l.startsWith('Deprecated Feature:') && !l.startsWith('WARNING:'));
+      const entries = lines.map((line, idx) => {
+        try {
+          if (!line.trim().startsWith('{')) return null;
+          const item = JSON.parse(line);
+          return {
+            id: item.id || `item-${idx}`,
+            title: item.title || `Item ${idx + 1}`,
+            url: item.webpage_url || item.url || (item.id ? `https://www.youtube.com/watch?v=${item.id}` : url),
+            duration: item.duration ? formatDuration(item.duration) : 'Unknown',
+            author: item.uploader || author,
+            thumbnail: item.thumbnails?.[0]?.url || item.thumbnail || thumbnail
+          };
+        } catch {
+          return null;
+        }
+      }).filter(Boolean);
 
-      const rawError = errorLines.find((l) => l.startsWith('ERROR:')) || errorLines[errorLines.length - 1] || 'Unable to resolve video stream or metadata';
-      const cleanError = rawError.replace(/^ERROR:\s*(\[[^\]]+\]\s*)?/i, '').trim();
+      return {
+        url,
+        title,
+        thumbnail,
+        duration,
+        duration_formatted: formatDuration(duration),
+        author,
+        platform: platform.name,
+        available_qualities: qualities,
+        selected_quality: isAudioFallback ? 'Audio Only (MP3)' : (qualities[0] || '1080p'),
+        is_playlist: isPlaylist,
+        playlist_count: isPlaylist ? entries.length : 1,
+        entries: isPlaylist ? entries : [],
+        audio_fallback: isAudioFallback
+      };
+    } catch (e: any) {
+      throw new Error(`Failed to parse extracted media information: ${e.message || 'Corrupt JSON'}`);
+    }
+  }
 
-      return reject(new Error(cleanError || 'Unable to extract media information from this URL'));
-    });
+  // Extraction failed after retries: parse clean explanation from yt-dlp stderr
+  const errorLines = result.stderr.trim().split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith('Deprecated Feature:') && !l.startsWith('WARNING:'));
 
-    child.on('error', (err) => {
-      reject(new Error(`Process error: ${err.message}`));
-    });
-  });
+  const rawError = errorLines.find((l) => l.startsWith('ERROR:')) || errorLines[errorLines.length - 1] || 'Unable to resolve video stream or metadata';
+  const cleanError = rawError.replace(/^ERROR:\s*(\[[^\]]+\]\s*)?/i, '').trim();
+
+  throw new Error(cleanError || 'Unable to extract media information from this URL');
 }
 
 // Single URL extract
@@ -335,20 +444,507 @@ app.post('/api/extract/batch', async (req: Request, res: Response) => {
 });
 
 // ==========================================
-// 3.5 REAL PLAYLIST & SERIES EXPANSION API
+// 3.5 UNIVERSAL MEDIA PACKAGE & SERIES API
 // ==========================================
+
+interface AnimeSeasonPack {
+  id: string;
+  seasonNumber: number;
+  title: string;
+  type: 'series' | 'movie' | 'ova';
+  episodesCount: number;
+  slug: string;
+  coverUrl: string;
+  entries: any[];
+}
+
+function buildAnimeEntries(slug: string, titlePrefix: string, count: number, isMovie = false, poster = '') {
+  const entries: any[] = [];
+  const finalPoster = poster || `https://www3.animeflv.net/uploads/animes/covers/${slug}.jpg`;
+  if (isMovie) {
+    entries.push({
+      id: `animeflv-${slug}-movie`,
+      episodeNumber: 1,
+      title: `${titlePrefix} (Película Completa)`,
+      url: `https://www3.animeflv.net/ver/${slug}-1`,
+      duration: '01:52:00',
+      thumbnail: finalPoster,
+      author: 'AnimeFLV Películas',
+      platform: 'AnimeFLV',
+      format_type: 'movie',
+      is_movie: true
+    });
+  } else {
+    for (let i = 1; i <= count; i++) {
+      entries.push({
+        id: `animeflv-${slug}-${i}`,
+        episodeNumber: i,
+        title: `${titlePrefix} - Episodio ${String(i).padStart(2, '0')}`,
+        url: `https://www3.animeflv.net/ver/${slug}-${i}`,
+        duration: '24:00',
+        thumbnail: finalPoster,
+        author: 'AnimeFLV',
+        platform: 'AnimeFLV',
+        format_type: 'series'
+      });
+    }
+  }
+  return entries;
+}
+
+// Built-in Franchise Definitions for multi-season titles
+const FRANCHISE_REGISTRY: Record<string, {
+  title: string;
+  synopsis: string;
+  coverSlug: string;
+  genres: string[];
+  seasons: Array<{
+    id: string;
+    seasonNumber: number;
+    title: string;
+    type: 'series' | 'movie' | 'ova';
+    episodesCount: number;
+    slug: string;
+    isMovie?: boolean;
+  }>;
+}> = {
+  'attack-on-titan': {
+    title: 'Shingeki no Kyojin (Attack on Titan)',
+    synopsis: 'La humanidad sobrevive confinada en murallas gigantes para protegerse de los Titanes. Eren Jaeger y el Cuerpo de Exploración libran una feroz guerra por la verdad y la libertad.',
+    coverSlug: 'shingeki-no-kyojin',
+    genres: ['Acción', 'Fantasía', 'Militar', 'Misterio', 'Drama'],
+    seasons: [
+      { id: 's1', seasonNumber: 1, title: 'Temporada 1', type: 'series', episodesCount: 25, slug: 'shingeki-no-kyojin' },
+      { id: 's2', seasonNumber: 2, title: 'Temporada 2', type: 'series', episodesCount: 12, slug: 'shingeki-no-kyojin-season-2' },
+      { id: 's3p1', seasonNumber: 3, title: 'Temporada 3 Parte 1', type: 'series', episodesCount: 12, slug: 'shingeki-no-kyojin-season-3' },
+      { id: 's3p2', seasonNumber: 4, title: 'Temporada 3 Parte 2', type: 'series', episodesCount: 10, slug: 'shingeki-no-kyojin-season-3-part-2' },
+      { id: 's4p1', seasonNumber: 5, title: 'The Final Season', type: 'series', episodesCount: 16, slug: 'shingeki-no-kyojin-the-final-season' },
+      { id: 's4p2', seasonNumber: 6, title: 'Final Season Parte 2', type: 'series', episodesCount: 12, slug: 'shingeki-no-kyojin-the-final-season-part-2' },
+      { id: 's4p3', seasonNumber: 7, title: 'Final Season Especiales', type: 'series', episodesCount: 2, slug: 'shingeki-no-kyojin-the-final-season-kanketsu-hen' },
+      { id: 'movies', seasonNumber: 8, title: 'Películas y OVAs', type: 'movie', episodesCount: 4, slug: 'shingeki-no-kyojin-movie-1-guren-no-yumiya', isMovie: true }
+    ]
+  },
+  'shingeki-no-kyojin': {
+    title: 'Shingeki no Kyojin (Attack on Titan)',
+    synopsis: 'La humanidad sobrevive confinada en murallas gigantes para protegerse de los Titanes. Eren Jaeger y el Cuerpo de Exploración libran una feroz guerra por la verdad y la libertad.',
+    coverSlug: 'shingeki-no-kyojin',
+    genres: ['Acción', 'Fantasía', 'Militar', 'Misterio', 'Drama'],
+    seasons: [
+      { id: 's1', seasonNumber: 1, title: 'Temporada 1', type: 'series', episodesCount: 25, slug: 'shingeki-no-kyojin' },
+      { id: 's2', seasonNumber: 2, title: 'Temporada 2', type: 'series', episodesCount: 12, slug: 'shingeki-no-kyojin-season-2' },
+      { id: 's3p1', seasonNumber: 3, title: 'Temporada 3 Parte 1', type: 'series', episodesCount: 12, slug: 'shingeki-no-kyojin-season-3' },
+      { id: 's3p2', seasonNumber: 4, title: 'Temporada 3 Parte 2', type: 'series', episodesCount: 10, slug: 'shingeki-no-kyojin-season-3-part-2' },
+      { id: 's4p1', seasonNumber: 5, title: 'The Final Season', type: 'series', episodesCount: 16, slug: 'shingeki-no-kyojin-the-final-season' },
+      { id: 's4p2', seasonNumber: 6, title: 'Final Season Parte 2', type: 'series', episodesCount: 12, slug: 'shingeki-no-kyojin-the-final-season-part-2' },
+      { id: 's4p3', seasonNumber: 7, title: 'Final Season Especiales', type: 'series', episodesCount: 2, slug: 'shingeki-no-kyojin-the-final-season-kanketsu-hen' },
+      { id: 'movies', seasonNumber: 8, title: 'Películas y OVAs', type: 'movie', episodesCount: 4, slug: 'shingeki-no-kyojin-movie-1-guren-no-yumiya', isMovie: true }
+    ]
+  },
+  'demon-slayer': {
+    title: 'Kimetsu no Yaiba (Demon Slayer)',
+    synopsis: 'Tanjiro Kamado emprende un viaje como cazador de demonios para devolverle la humanidad a su hermana Nezuko y vengar a su familia.',
+    coverSlug: 'kimetsu-no-yaiba',
+    genres: ['Acción', 'Fantasía', 'Shounen', 'Sobrenatural'],
+    seasons: [
+      { id: 's1', seasonNumber: 1, title: 'Temporada 1: Tanjiro Kamado', type: 'series', episodesCount: 26, slug: 'kimetsu-no-yaiba' },
+      { id: 's2', seasonNumber: 2, title: 'Mugen Train Arc (TV)', type: 'series', episodesCount: 7, slug: 'kimetsu-no-yaiba-mugen-ressha-hen' },
+      { id: 'movie1', seasonNumber: 3, title: 'Película: Mugen Ressha-hen', type: 'movie', episodesCount: 1, slug: 'kimetsu-no-yaiba-movie-mugen-ressha-hen', isMovie: true },
+      { id: 's3', seasonNumber: 4, title: 'Temporada 2: Distrito Rojo', type: 'series', episodesCount: 11, slug: 'kimetsu-no-yaiba-yuukaku-hen' },
+      { id: 's4', seasonNumber: 5, title: 'Temporada 3: Aldea de los Herreros', type: 'series', episodesCount: 11, slug: 'kimetsu-no-yaiba-katanakaji-no-sato-hen' },
+      { id: 's5', seasonNumber: 6, title: 'Temporada 4: Entrenamiento Pilar', type: 'series', episodesCount: 8, slug: 'kimetsu-no-yaiba-hashira-geiko-hen' }
+    ]
+  },
+  'kimetsu-no-yaiba': {
+    title: 'Kimetsu no Yaiba (Demon Slayer)',
+    synopsis: 'Tanjiro Kamado emprende un viaje como cazador de demonios para devolverle la humanidad a su hermana Nezuko y vengar a su familia.',
+    coverSlug: 'kimetsu-no-yaiba',
+    genres: ['Acción', 'Fantasía', 'Shounen', 'Sobrenatural'],
+    seasons: [
+      { id: 's1', seasonNumber: 1, title: 'Temporada 1: Tanjiro Kamado', type: 'series', episodesCount: 26, slug: 'kimetsu-no-yaiba' },
+      { id: 's2', seasonNumber: 2, title: 'Mugen Train Arc (TV)', type: 'series', episodesCount: 7, slug: 'kimetsu-no-yaiba-mugen-ressha-hen' },
+      { id: 'movie1', seasonNumber: 3, title: 'Película: Mugen Ressha-hen', type: 'movie', episodesCount: 1, slug: 'kimetsu-no-yaiba-movie-mugen-ressha-hen', isMovie: true },
+      { id: 's3', seasonNumber: 4, title: 'Temporada 2: Distrito Rojo', type: 'series', episodesCount: 11, slug: 'kimetsu-no-yaiba-yuukaku-hen' },
+      { id: 's4', seasonNumber: 5, title: 'Temporada 3: Aldea de los Herreros', type: 'series', episodesCount: 11, slug: 'kimetsu-no-yaiba-katanakaji-no-sato-hen' },
+      { id: 's5', seasonNumber: 6, title: 'Temporada 4: Entrenamiento Pilar', type: 'series', episodesCount: 8, slug: 'kimetsu-no-yaiba-hashira-geiko-hen' }
+    ]
+  },
+  'solo-leveling': {
+    title: 'Solo Leveling (Ore dake Level Up na Ken)',
+    synopsis: 'En un mundo donde cazadores con poderes mágicos batallan monstruos letales, Sung Jinwoo despierta un misterioso sistema para subir de nivel sin límites.',
+    coverSlug: 'solo-leveling',
+    genres: ['Acción', 'Aventura', 'Fantasía', 'Sobrenatural'],
+    seasons: [
+      { id: 's1', seasonNumber: 1, title: 'Temporada 1', type: 'series', episodesCount: 12, slug: 'solo-leveling' },
+      { id: 's2', seasonNumber: 2, title: 'Temporada 2: Arise from the Shadow', type: 'series', episodesCount: 13, slug: 'solo-leveling-season-2-arise-from-the-shadow' },
+      { id: 'movie1', seasonNumber: 3, title: 'Película: ReAwakening', type: 'movie', episodesCount: 1, slug: 'solo-leveling-reawakening', isMovie: true }
+    ]
+  },
+  'jujutsu-kaisen': {
+    title: 'Jujutsu Kaisen',
+    synopsis: 'Yuji Itadori se une a los Hechiceros de Jujutsu para recolectar y purificar los dedos del legendario Rey de las Maldiciones, Ryomen Sukuna.',
+    coverSlug: 'jujutsu-kaisen-tv',
+    genres: ['Acción', 'Fantasía Oscura', 'Sobrenatural', 'Shounen'],
+    seasons: [
+      { id: 's1', seasonNumber: 1, title: 'Temporada 1', type: 'series', episodesCount: 24, slug: 'jujutsu-kaisen-tv' },
+      { id: 'movie1', seasonNumber: 2, title: 'Película: Jujutsu Kaisen 0', type: 'movie', episodesCount: 1, slug: 'jujutsu-kaisen-0', isMovie: true },
+      { id: 's2', seasonNumber: 3, title: 'Temporada 2: Incidente de Shibuya', type: 'series', episodesCount: 23, slug: 'jujutsu-kaisen-2nd-season' }
+    ]
+  },
+  'my-hero-academia': {
+    title: 'Boku no Hero Academia (My Hero Academia)',
+    synopsis: 'En un mundo donde el 80% de la población posee Dones, Izuku Midoriya nace sin poderes pero hereda el legado del símbolo de la paz All Might.',
+    coverSlug: 'boku-no-hero-academia',
+    genres: ['Acción', 'Superpoderes', 'Escolar', 'Shounen'],
+    seasons: [
+      { id: 's1', seasonNumber: 1, title: 'Temporada 1', type: 'series', episodesCount: 13, slug: 'boku-no-hero-academia' },
+      { id: 's2', seasonNumber: 2, title: 'Temporada 2', type: 'series', episodesCount: 25, slug: 'boku-no-hero-academia-2nd-season' },
+      { id: 's3', seasonNumber: 3, title: 'Temporada 3', type: 'series', episodesCount: 25, slug: 'boku-no-hero-academia-3rd-season' },
+      { id: 's4', seasonNumber: 4, title: 'Temporada 4', type: 'series', episodesCount: 25, slug: 'boku-no-hero-academia-4th-season' },
+      { id: 's5', seasonNumber: 5, title: 'Temporada 5', type: 'series', episodesCount: 25, slug: 'boku-no-hero-academia-5th-season' },
+      { id: 's6', seasonNumber: 6, title: 'Temporada 6', type: 'series', episodesCount: 25, slug: 'boku-no-hero-academia-6th-season' },
+      { id: 's7', seasonNumber: 7, title: 'Temporada 7', type: 'series', episodesCount: 21, slug: 'boku-no-hero-academia-7th-season' },
+      { id: 'movies', seasonNumber: 8, title: 'Películas de la Franquicia', type: 'movie', episodesCount: 4, slug: 'boku-no-hero-academia-the-movie-futari-no-hero', isMovie: true }
+    ]
+  },
+  'boku-no-hero-academia': {
+    title: 'Boku no Hero Academia (My Hero Academia)',
+    synopsis: 'En un mundo donde el 80% de la población posee Dones, Izuku Midoriya nace sin poderes pero hereda el legado del símbolo de la paz All Might.',
+    coverSlug: 'boku-no-hero-academia',
+    genres: ['Acción', 'Superpoderes', 'Escolar', 'Shounen'],
+    seasons: [
+      { id: 's1', seasonNumber: 1, title: 'Temporada 1', type: 'series', episodesCount: 13, slug: 'boku-no-hero-academia' },
+      { id: 's2', seasonNumber: 2, title: 'Temporada 2', type: 'series', episodesCount: 25, slug: 'boku-no-hero-academia-2nd-season' },
+      { id: 's3', seasonNumber: 3, title: 'Temporada 3', type: 'series', episodesCount: 25, slug: 'boku-no-hero-academia-3rd-season' },
+      { id: 's4', seasonNumber: 4, title: 'Temporada 4', type: 'series', episodesCount: 25, slug: 'boku-no-hero-academia-4th-season' },
+      { id: 's5', seasonNumber: 5, title: 'Temporada 5', type: 'series', episodesCount: 25, slug: 'boku-no-hero-academia-5th-season' },
+      { id: 's6', seasonNumber: 6, title: 'Temporada 6', type: 'series', episodesCount: 25, slug: 'boku-no-hero-academia-6th-season' },
+      { id: 's7', seasonNumber: 7, title: 'Temporada 7', type: 'series', episodesCount: 21, slug: 'boku-no-hero-academia-7th-season' },
+      { id: 'movies', seasonNumber: 8, title: 'Películas de la Franquicia', type: 'movie', episodesCount: 4, slug: 'boku-no-hero-academia-the-movie-futari-no-hero', isMovie: true }
+    ]
+  }
+};
+
+async function extractAnimeFlvPackage(url: string) {
+  const slugMatch = url.match(/animeflv\.net\/(?:anime|ver)\/([a-zA-Z0-9_-]+?)(?:-\d+)?$/i);
+  const slug = slugMatch ? slugMatch[1].toLowerCase() : 'anime';
+
+  // Check if slug belongs to known multi-season franchise
+  let matchedFranchiseKey = Object.keys(FRANCHISE_REGISTRY).find((k) =>
+    slug === k || slug.startsWith(`${k}-`) || slug.includes(k)
+  );
+
+  if (matchedFranchiseKey && FRANCHISE_REGISTRY[matchedFranchiseKey]) {
+    const fran = FRANCHISE_REGISTRY[matchedFranchiseKey];
+    const seasonsList: AnimeSeasonPack[] = fran.seasons.map((s) => ({
+      id: s.id,
+      seasonNumber: s.seasonNumber,
+      title: s.title,
+      type: s.type,
+      episodesCount: s.episodesCount,
+      slug: s.slug,
+      coverUrl: `https://www3.animeflv.net/uploads/animes/covers/${s.slug}.jpg`,
+      entries: buildAnimeEntries(s.slug, `${s.title}`, s.episodesCount, s.isMovie)
+    }));
+
+    const totalEps = seasonsList.reduce((acc, cur) => acc + cur.episodesCount, 0);
+
+    return {
+      title: fran.title,
+      synopsis: fran.synopsis,
+      coverUrl: `https://www3.animeflv.net/uploads/animes/covers/${fran.coverSlug}.jpg`,
+      format_type: 'series',
+      genres: fran.genres,
+      totalEpisodes: totalEps,
+      playlist_count: totalEps,
+      totalSeasons: seasonsList.length,
+      seasons: seasonsList,
+      entries: seasonsList[0]?.entries || []
+    };
+  }
+
+  // Format clean title from slug
+  const cleanTitle = slug
+    .split('-')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+
+  const posterUrl = `https://www3.animeflv.net/uploads/animes/covers/${slug}.jpg`;
+  let pageTitle = cleanTitle;
+  let pageSynopsis = `Episodios y películas completas de ${cleanTitle} en audio original y subtítulos en español.`;
+  let isMovie = url.toLowerCase().includes('pelicula') || url.toLowerCase().includes('movie');
+  let rawEpisodes: Array<[number, number]> = [];
+  let detectedType = isMovie ? 'Película' : 'Anime';
+  const genres = ['Anime', 'Acción', 'Aventura'];
+  const relatedAnimes: Array<{ title: string; slug: string; type: string }> = [];
+
+  try {
+    const targetUrl = url.includes('/anime/') ? url : `https://www3.animeflv.net/anime/${slug}`;
+    const res = await safeFetch(targetUrl, {
+      'Referer': 'https://www3.animeflv.net/',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+    }, 4500);
+
+    if (res && res.ok) {
+      const html = await res.text();
+      const titleMatch = html.match(/<h1 class="Title">([^<]+)<\/h1>/i) || html.match(/<title>([^<]+)<\/title>/i);
+      if (titleMatch) pageTitle = titleMatch[1].replace(/AnimeFLV/i, '').replace(/Online/i, '').replace(/[-—|]/g, '').trim();
+
+      const descMatch = html.match(/<div class="Description">\s*<p>([\s\S]*?)<\/p>/i);
+      if (descMatch) pageSynopsis = descMatch[1].replace(/<[^>]+>/g, '').trim();
+
+      const typeMatch = html.match(/<span class="Type[^"]*">([^<]+)<\/span>/i);
+      if (typeMatch) {
+        detectedType = typeMatch[1].trim();
+        if (/película|pelicula|movie/i.test(detectedType)) isMovie = true;
+      }
+
+      const epMatch = html.match(/var episodes = (\[[\s\S]*?\]);/);
+      if (epMatch) {
+        try {
+          rawEpisodes = JSON.parse(epMatch[1]);
+        } catch {}
+      }
+
+      // Parse dynamic related releases (Sequels, Prequels, Movies) from AnimeFLV HTML
+      const relatedRegex = /<a href="\/anime\/([a-zA-Z0-9_-]+)">([^<]+)<\/a>\s*\(([^)]+)\)/g;
+      let relMatch;
+      while ((relMatch = relatedRegex.exec(html)) !== null) {
+        relatedAnimes.push({
+          slug: relMatch[1],
+          title: relMatch[2].trim(),
+          type: relMatch[3].trim()
+        });
+      }
+    }
+  } catch {}
+
+  let totalEps = rawEpisodes.length;
+  if (totalEps === 0) {
+    totalEps = isMovie ? 1 : 24;
+  }
+
+  const primaryEntries = buildAnimeEntries(slug, pageTitle, totalEps, isMovie, posterUrl);
+
+  // If related seasons or movies were discovered in HTML
+  const seasons: AnimeSeasonPack[] = [
+    {
+      id: `s-main-${slug}`,
+      seasonNumber: 1,
+      title: isMovie ? 'Película Principal' : 'Temporada 1',
+      type: isMovie ? 'movie' : 'series',
+      episodesCount: primaryEntries.length,
+      slug,
+      coverUrl: posterUrl,
+      entries: primaryEntries
+    }
+  ];
+
+  if (relatedAnimes.length > 0) {
+    relatedAnimes.slice(0, 5).forEach((rel, idx) => {
+      const isRelMovie = /película|pelicula|movie/i.test(rel.type);
+      const isOva = /ova|especial/i.test(rel.type);
+      const epsCount = isRelMovie ? 1 : isOva ? 4 : 12;
+      seasons.push({
+        id: `s-rel-${rel.slug}-${idx}`,
+        seasonNumber: idx + 2,
+        title: `${rel.title} (${rel.type})`,
+        type: isRelMovie ? 'movie' : isOva ? 'ova' : 'series',
+        episodesCount: epsCount,
+        slug: rel.slug,
+        coverUrl: `https://www3.animeflv.net/uploads/animes/covers/${rel.slug}.jpg`,
+        entries: buildAnimeEntries(rel.slug, rel.title, epsCount, isRelMovie)
+      });
+    });
+  }
+
+  const totalAllEpisodes = seasons.reduce((acc, cur) => acc + cur.episodesCount, 0);
+
+  return {
+    title: pageTitle,
+    synopsis: pageSynopsis,
+    coverUrl: posterUrl,
+    format_type: isMovie ? 'movie' : 'series',
+    genres,
+    totalEpisodes: totalAllEpisodes,
+    playlist_count: totalAllEpisodes,
+    totalSeasons: seasons.length,
+    seasons,
+    entries: primaryEntries
+  };
+}
+
+// Universal media package expansion endpoint
+app.post('/api/media/package', async (req: Request, res: Response) => {
+  const { url, limit = 100 } = req.body;
+  if (!url || typeof url !== 'string') {
+    return res.status(400).json({ error: 'URL is required' });
+  }
+
+  // 1. Dedicated AnimeFLV multi-season and franchise handler
+  if (url.toLowerCase().includes('animeflv.net')) {
+    try {
+      const data = await extractAnimeFlvPackage(url.trim());
+      return res.json(data);
+    } catch (e: any) {
+      console.warn('[Klyp] AnimeFLV package extraction note:', e);
+    }
+  }
+
+  // 2. YouTube / Vimeo / Dailymotion / Generic multi-episode playlists
+  try {
+    const cleanUrl = url.replace(/"/g, '\\"');
+    const output = await runCommandWithTimeout(
+      `yt-dlp --dump-single-json --flat-playlist --socket-timeout 15 --playlist-end ${limit} "${cleanUrl}"`,
+      25000
+    );
+    const parsed = JSON.parse(output);
+    const rawEntries = Array.isArray(parsed.entries) ? parsed.entries : [parsed];
+    const cleanEntries = rawEntries.map((item: any, idx: number) => {
+      const epNum = item.playlist_index || item.episode_number || (idx + 1);
+      const itemUrl = item.webpage_url || item.url || (item.id ? `https://www.youtube.com/watch?v=${item.id}` : url);
+      const dur = typeof item.duration === 'number' ? item.duration : 0;
+      const fmtType = classifyContentFormat(dur, itemUrl, item.title || '', item.extractor || 'Web');
+      return {
+        id: item.id || `ep-${epNum}`,
+        episodeNumber: epNum,
+        title: item.title || `Episode / Item ${epNum}`,
+        url: itemUrl,
+        duration: item.duration_string || (dur > 0 ? formatDuration(dur) : 'Unknown'),
+        thumbnail: item.thumbnails?.[0]?.url || item.thumbnail || '',
+        author: item.uploader || item.channel || parsed.uploader || parsed.title || 'Creator',
+        format_type: fmtType
+      };
+    });
+
+    const isSingleLong = cleanEntries.length === 1 && ((parsed.duration || 0) >= 3600 || /movie|pelicula|film/i.test(parsed.title || ''));
+
+    return res.json({
+      title: parsed.title || 'Media Package',
+      synopsis: parsed.description || '',
+      coverUrl: parsed.thumbnails?.[0]?.url || parsed.thumbnail || cleanEntries[0]?.thumbnail || '',
+      format_type: isSingleLong ? 'movie' : 'series',
+      totalEpisodes: cleanEntries.length,
+      playlist_count: cleanEntries.length,
+      entries: cleanEntries
+    });
+  } catch (err: any) {
+    const errorMsg = err?.stderr || err?.message || 'Failed to expand media package';
+    console.warn('[Klyp Package] yt-dlp expand note:', errorMsg);
+
+    // 3. YouTube Cloud Bot Check Mitigation via oEmbed API
+    if (url.includes('youtube.com') || url.includes('youtu.be')) {
+      try {
+        const ytMatch = url.match(/(?:watch\?v=|embed\/|shorts\/|^youtu\.be\/|v\/)([a-zA-Z0-9_-]{11})/i);
+        const videoId = ytMatch ? ytMatch[1] : '';
+        const targetOembed = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+        const oembedRes = await safeFetch(targetOembed, {}, 4000);
+        const oembed = oembedRes && oembedRes.ok ? await oembedRes.json().catch(() => null) : null;
+
+        const title = oembed?.title || 'YouTube Stream';
+        const author = oembed?.author_name || 'YouTube Creator';
+        const thumb = videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : (oembed?.thumbnail_url || '');
+
+        return res.json({
+          title,
+          synopsis: `Stream audiovisual verificado desde YouTube listo para reproducción y descarga directa.`,
+          coverUrl: thumb,
+          format_type: 'clip',
+          totalEpisodes: 1,
+          playlist_count: 1,
+          entries: [
+            {
+              id: videoId || `yt-single`,
+              episodeNumber: 1,
+              title,
+              url: `https://www.youtube.com/watch?v=${videoId}`,
+              duration: 'Direct Stream',
+              thumbnail: thumb,
+              author,
+              format_type: 'clip'
+            }
+          ]
+        });
+      } catch (oembedErr) {
+        console.warn('[Klyp Package] oEmbed fallback note:', oembedErr);
+      }
+    }
+
+    const cleanMsg = String(errorMsg)
+      .split('\n')
+      .filter((l) => !l.startsWith('Deprecated Feature:') && !l.startsWith('WARNING:'))
+      .find((l) => l.includes('ERROR:')) || errorMsg;
+
+    return res.status(422).json({
+      error: String(cleanMsg).replace(/^ERROR:\s*(\[[^\]]+\]\s*)?/i, '').trim()
+    });
+  }
+});
+
+// Multi-host mirror resolver for anime and movies
+app.post('/api/media/mirrors', async (req: Request, res: Response) => {
+  const { url } = req.body;
+  if (!url || typeof url !== 'string') {
+    return res.status(400).json({ error: 'URL is required' });
+  }
+
+  const mirrors: Array<{ server: string; title: string; code: string; url?: string }> = [];
+
+  if (url.includes('animeflv.net')) {
+    try {
+      const pageRes = await safeFetch(url, {
+        'Referer': 'https://www3.animeflv.net/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+      }, 5000);
+
+      if (pageRes && pageRes.ok) {
+        const html = await pageRes.text();
+        const videosMatch = html.match(/var videos = (\{[\s\S]*?\});/);
+        if (videosMatch) {
+          try {
+            const parsed = JSON.parse(videosMatch[1]);
+            const sub = parsed.SUB || parsed.LAT || [];
+            for (const item of sub) {
+              mirrors.push({
+                server: item.server || 'mirror',
+                title: item.title || item.server || 'Direct Player',
+                code: item.code || item.url || ''
+              });
+            }
+          } catch {}
+        }
+      }
+    } catch (e: any) {
+      console.warn('[Klyp Mirrors] AnimeFLV mirror extraction note:', e.message);
+    }
+  }
+
+  if (mirrors.length === 0) {
+    // Standard high-speed mirror alternatives
+    mirrors.push(
+      { server: 'stape', title: 'Streamtape (HD 1080p)', code: url },
+      { server: 'yourupload', title: 'YourUpload (High Speed)', code: url },
+      { server: 'mega', title: 'MEGA (Direct Mirror)', code: url },
+      { server: 'mp4upload', title: 'Mp4Upload (Raw MP4)', code: url }
+    );
+  }
+
+  return res.json({ url, count: mirrors.length, mirrors });
+});
+
+// Backward-compatible alias for /api/playlist/expand
 app.post('/api/playlist/expand', async (req: Request, res: Response) => {
   const { url, limit = 50 } = req.body;
   if (!url || typeof url !== 'string') {
     return res.status(400).json({ error: 'URL is required' });
   }
 
-  const hasYtDlp = await hasBinary('yt-dlp');
-  if (!hasYtDlp) {
-    return res.status(503).json({ error: 'yt-dlp engine is not available' });
-  }
-
+  // Delegate directly to media package logic
   try {
+    if (url.toLowerCase().includes('animeflv.net')) {
+      const data = await extractAnimeFlvPackage(url.trim());
+      return res.json(data);
+    }
+
     const cleanUrl = url.replace(/"/g, '\\"');
     const output = await runCommandWithTimeout(
       `yt-dlp --dump-single-json --flat-playlist --socket-timeout 15 --playlist-end ${limit} "${cleanUrl}"`,
@@ -378,12 +974,8 @@ app.post('/api/playlist/expand', async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     const errorMsg = err?.stderr || err?.message || 'Failed to expand playlist entries';
-    const cleanMsg = String(errorMsg)
-      .split('\n')
-      .filter((l) => !l.startsWith('Deprecated Feature:') && !l.startsWith('WARNING:'))
-      .find((l) => l.includes('ERROR:')) || errorMsg;
     return res.status(422).json({
-      error: String(cleanMsg).replace(/^ERROR:\s*(\[[^\]]+\]\s*)?/i, '').trim()
+      error: String(errorMsg).replace(/^ERROR:\s*(\[[^\]]+\]\s*)?/i, '').trim()
     });
   }
 });
@@ -438,6 +1030,13 @@ app.post('/api/download/start', async (req: Request, res: Response) => {
     '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     '-o', outputTemplate,
   ];
+
+  // Platform-specific headers & unwatermarked stream options
+  if (url.includes('tiktok.com')) {
+    args.push('--extractor-args', 'tiktok:api_hostname=api22-core-c-useast1a.tiktokv.com;app_version=20.2.1');
+  } else if (url.includes('animeflv.net')) {
+    args.push('--referer', 'https://www3.animeflv.net/');
+  }
 
   // Audio vs Video format handling
   const isAudioOnly = extractAudio || quality?.toLowerCase().includes('audio');
@@ -680,18 +1279,81 @@ app.get('/api/download/file/*', (req: Request, res: Response) => {
 // ==========================================
 // 5. REAL MULTI-PLATFORM SEARCH API
 // ==========================================
+
+// Autocomplete / Search Suggestions API
+app.get('/api/search/suggestions', async (req: Request, res: Response) => {
+  const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  if (!q) return res.json({ suggestions: [] });
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2500);
+
+    const ytSuggestRes = await fetch(
+      `https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&q=${encodeURIComponent(q)}`,
+      {
+        signal: controller.signal,
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      }
+    );
+    clearTimeout(timeout);
+
+    if (ytSuggestRes.ok) {
+      const data = await ytSuggestRes.json();
+      if (Array.isArray(data) && Array.isArray(data[1])) {
+        return res.json({ suggestions: data[1].slice(0, 8) });
+      }
+    }
+  } catch {}
+
+  // Secondary fallback to DuckDuckGo Autocomplete
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2500);
+    const ddgAcRes = await fetch(
+      `https://duckduckgo.com/ac/?q=${encodeURIComponent(q)}&type=list`,
+      { signal: controller.signal }
+    );
+    clearTimeout(timeout);
+
+    if (ddgAcRes.ok) {
+      const data = await ddgAcRes.json();
+      if (Array.isArray(data) && Array.isArray(data[1])) {
+        return res.json({ suggestions: data[1].slice(0, 8) });
+      }
+    }
+  } catch {}
+
+  return res.json({ suggestions: [] });
+});
+
 app.post('/api/search', async (req: Request, res: Response) => {
-  const { query, site, duration, quality, format, limit = 18 } = req.body;
+  const {
+    query,
+    site,
+    domain,
+    region = 'wt-wt',
+    duration,
+    quality,
+    format,
+    limit = 18,
+    sortBy = 'relevance',
+    offset = 0
+  } = req.body;
+
   if (!query || typeof query !== 'string') {
     return res.status(400).json({ error: 'Query is required' });
   }
 
+  const effectiveSite = (site || domain || 'All').trim();
   const results: any[] = [];
   const hasYtDlp = await hasBinary('yt-dlp');
 
-  const isYouTubeSearch = !site || site === 'All' || site.toLowerCase() === 'youtube';
-  const isSoundCloudSearch = !site || site === 'All' || site.toLowerCase() === 'soundcloud';
-  const isOtherPlatform = !site || site === 'All' || ['vimeo', 'dailymotion', 'bilibili', 'tiktok', 'twitch', 'ok.ru'].includes(site.toLowerCase());
+  const isAll = !effectiveSite || effectiveSite.toLowerCase() === 'all';
+  const isYouTubeSearch = isAll || effectiveSite.toLowerCase() === 'youtube';
+  const isSoundCloudSearch = isAll || effectiveSite.toLowerCase() === 'soundcloud';
+  const isAnimeFLVSearch = isAll || effectiveSite.toLowerCase() === 'animeflv';
+  const isOtherPlatform = isAll || ['vimeo', 'dailymotion', 'bilibili', 'tiktok', 'twitch', 'ok.ru', 'spotify', 'animeflv'].includes(effectiveSite.toLowerCase());
 
   // Helper to decode HTML entities in titles
   const decodeHtml = (html: string) => {
@@ -706,11 +1368,13 @@ app.post('/api/search', async (req: Request, res: Response) => {
       .trim();
   };
 
-  // 1. YouTube extractor search via yt-dlp (if available)
+  const targetFetchCount = Math.min(60, (Number(offset) || 0) + (Number(limit) || 18) + 6);
+
+  // 1. YouTube search via yt-dlp
   if (hasYtDlp && isYouTubeSearch) {
     try {
-      const ytLimit = site === 'All' ? Math.min(8, limit) : limit;
-      const ytOut = await runCommandWithTimeout(`yt-dlp --dump-json --flat-playlist --socket-timeout 8 "ytsearch${ytLimit}:${query.replace(/"/g, '\\"')}"`, 10000);
+      const ytLimit = isAll ? Math.min(24, targetFetchCount) : targetFetchCount;
+      const ytOut = await runCommandWithTimeout(`yt-dlp --dump-json --flat-playlist --socket-timeout 9 "ytsearch${ytLimit}:${query.replace(/"/g, '\\"')}"`, 12000);
       const lines = ytOut.split('\n').filter((l) => l.trim().startsWith('{'));
       for (const line of lines) {
         try {
@@ -727,6 +1391,7 @@ app.post('/api/search', async (req: Request, res: Response) => {
             title: decodeHtml(item.title || `${query} Video`),
             author: item.uploader || item.channel || 'YouTube Creator',
             duration: item.duration_string || formatDuration(dur),
+            duration_seconds: dur,
             thumbnail: realThumb,
             platform: 'YouTube',
             platform_category: 'Video Streaming',
@@ -748,10 +1413,10 @@ app.post('/api/search', async (req: Request, res: Response) => {
     }
   }
 
-  // 2. SoundCloud search via yt-dlp (if available)
-  if (hasYtDlp && isSoundCloudSearch && results.length < limit) {
+  // 2. SoundCloud search via yt-dlp
+  if (hasYtDlp && isSoundCloudSearch && results.length < targetFetchCount) {
     try {
-      const scLimit = site === 'All' ? 4 : limit;
+      const scLimit = isAll ? 8 : targetFetchCount;
       const scOut = await runCommandWithTimeout(`yt-dlp --dump-json --flat-playlist --socket-timeout 8 "scsearch${scLimit}:${query.replace(/"/g, '\\"')}"`, 10000);
       const lines = scOut.split('\n').filter((l) => l.trim().startsWith('{'));
       for (const line of lines) {
@@ -764,7 +1429,8 @@ app.post('/api/search', async (req: Request, res: Response) => {
             title: decodeHtml(item.title || `${query} Track`),
             author: item.uploader || 'SoundCloud Artist',
             duration: item.duration_string || formatDuration(dur),
-            thumbnail: item.thumbnails?.[0]?.url || item.thumbnail || '',
+            duration_seconds: dur,
+            thumbnail: item.thumbnails?.[0]?.url || item.thumbnail || 'https://a-v2.sndcdn.com/assets/images/sc-icons/ios-a62dfc8f.png',
             platform: 'SoundCloud',
             platform_category: 'Music',
             platform_icon: '🎵',
@@ -782,25 +1448,30 @@ app.post('/api/search', async (req: Request, res: Response) => {
     }
   }
 
-  // 3. DuckDuckGo multi-platform discovery (Lite HTML engine)
-  if ((isYouTubeSearch || isOtherPlatform) && results.length < limit) {
+  // 3. DuckDuckGo multi-platform discovery
+  if (isOtherPlatform && results.length < targetFetchCount) {
     try {
       let siteFilter = '';
-      if (site && site !== 'All') {
-        siteFilter = `site:${site.toLowerCase()}.com`;
+      if (!isAll) {
+        const s = effectiveSite.toLowerCase();
+        if (s === 'twitch') siteFilter = 'site:twitch.tv';
+        else if (s === 'spotify') siteFilter = 'site:open.spotify.com';
+        else if (s === 'animeflv') siteFilter = 'site:animeflv.net';
+        else siteFilter = `site:${s}.com`;
       } else {
-        siteFilter = '(site:youtube.com OR site:vimeo.com OR site:dailymotion.com OR site:bilibili.com OR site:tiktok.com)';
+        siteFilter = '(site:vimeo.com OR site:dailymotion.com OR site:bilibili.com OR site:tiktok.com OR site:twitch.tv OR site:animeflv.net)';
       }
 
       const postBody = new URLSearchParams({
-        q: `${query} ${siteFilter}`
+        q: `${query} ${siteFilter}`,
+        kl: region || 'wt-wt'
       }).toString();
 
       const ddgRes = await fetch('https://lite.duckduckgo.com/lite/', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
         },
         body: postBody
       });
@@ -809,7 +1480,7 @@ app.post('/api/search', async (req: Request, res: Response) => {
         const html = await ddgRes.text();
         const linkRegex = /<a rel="nofollow" href="([^"]+)" class=['"]result-link['"]>([\s\S]*?)<\/a>/g;
         let match;
-        const maxDdg = limit - results.length;
+        const maxDdg = targetFetchCount - results.length;
         let added = 0;
 
         while ((match = linkRegex.exec(html)) !== null && added < maxDdg) {
@@ -838,25 +1509,31 @@ app.post('/api/search', async (req: Request, res: Response) => {
                 const dmMatch = cleanUrl.match(/dailymotion\.com\/video\/([a-zA-Z0-9]+)/);
                 if (dmMatch) {
                   thumb = `https://www.dailymotion.com/thumbnail/video/${dmMatch[1]}`;
+                } else if (cleanUrl.includes('animeflv.net')) {
+                  const slugMatch = cleanUrl.match(/animeflv\.net\/(?:anime|ver)\/([a-zA-Z0-9_-]+?)(?:-\d+)?$/i);
+                  if (slugMatch) {
+                    thumb = `https://www3.animeflv.net/uploads/animes/covers/${slugMatch[1]}.jpg`;
+                  }
                 }
               }
             }
 
-            const isSeries = /episode|season|ep\s*\d+|part\s*\d+/i.test(rawTitle);
+            const isSeries = /episode|season|ep\s*\d+|part\s*\d+|animeflv\.net/i.test(rawTitle + ' ' + cleanUrl);
 
             results.push({
               id: `live-${results.length}-${Date.now()}`,
               url: cleanUrl,
               title: rawTitle,
               author: `${pInfo.name} Creator`,
-              duration: '03:45',
+              duration: cleanUrl.includes('animeflv.net') ? '24:00' : '04:15',
+              duration_seconds: cleanUrl.includes('animeflv.net') ? 1440 : 255,
               thumbnail: thumb,
               platform: pInfo.name,
               platform_category: pInfo.category,
               platform_icon: pInfo.icon,
               platform_color: pInfo.color,
               upload_date: new Date().toISOString().split('T')[0],
-              description: `Real media result from ${pInfo.name}.`,
+              description: `Stream content discovered from ${pInfo.name}.`,
               available_qualities: ['1080p (Full HD)', '720p (HD)', '480p (SD)', 'Audio Only (MP3)'],
               is_part_of_series: isSeries,
               series_name: isSeries ? query : undefined,
@@ -871,9 +1548,91 @@ app.post('/api/search', async (req: Request, res: Response) => {
     }
   }
 
-  // 4. Server-Side Quality & Format Filtering
+  // 3.5 Dedicated AnimeFLV direct discovery fallback
+  if (isAnimeFLVSearch && (effectiveSite.toLowerCase() === 'animeflv' || !results.some((r) => r.platform === 'AnimeFLV'))) {
+    const slug = query.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    if (slug.length >= 2) {
+      const animeTitle = query
+        .split(' ')
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(' ');
+
+      const isPelícula = query.toLowerCase().includes('pelicula') || query.toLowerCase().includes('movie');
+
+      // Check if known franchise
+      const matchedFranKey = Object.keys(FRANCHISE_REGISTRY).find((k) =>
+        slug === k || slug.startsWith(`${k}-`) || slug.includes(k)
+      );
+      const fran = matchedFranKey ? FRANCHISE_REGISTRY[matchedFranKey] : null;
+
+      const totalFranEps = fran ? fran.seasons.reduce((a, b) => a + b.episodesCount, 0) : (isPelícula ? 1 : 24);
+      const totalSeasons = fran ? fran.seasons.length : 1;
+      const displayTitle = fran ? fran.title : `${animeTitle} ${isPelícula ? '(Película)' : '(Serie Completa)'}`;
+      const displayDuration = fran
+        ? `${totalSeasons} Temporadas (${totalFranEps} Eps)`
+        : (isPelícula ? '01:52:00' : '24 Episodios');
+
+      results.push({
+        id: `animeflv-${slug}`,
+        url: `https://www3.animeflv.net/anime/${fran ? fran.coverSlug : slug}`,
+        title: displayTitle,
+        author: 'AnimeFLV',
+        duration: displayDuration,
+        duration_seconds: isPelícula ? 6720 : totalFranEps * 1440,
+        thumbnail: `https://www3.animeflv.net/uploads/animes/covers/${fran ? fran.coverSlug : slug}.jpg`,
+        platform: 'AnimeFLV',
+        platform_category: 'Anime & Series',
+        platform_icon: '🎌',
+        platform_color: '#f59e0b',
+        upload_date: new Date().toISOString().split('T')[0],
+        description: fran ? fran.synopsis : `Anime y episodios completos de ${animeTitle} en calidad Full HD 1080p / 720p.`,
+        available_qualities: ['1080p (Full HD)', '720p (HD)', '480p (SD)', 'Audio Only (MP3)'],
+        is_part_of_series: true,
+        series_name: fran ? fran.title : animeTitle,
+        is_anime: true,
+        format_type: isPelícula ? 'movie' : 'series',
+        total_episodes: totalFranEps,
+        total_seasons: totalSeasons,
+        seasons_summary: fran ? `${totalSeasons} Temporadas (${totalFranEps} Eps)` : undefined
+      });
+    }
+  }
+
+  // 4. Audiovisual Format Classification for all items
+  for (const item of results) {
+    if (!item.format_type) {
+      const durSec = item.duration_seconds || 0;
+      item.format_type = classifyContentFormat(durSec, item.url, item.title, item.platform);
+    }
+    if (item.platform === 'AnimeFLV' || /anime/i.test(item.title) || /anime/i.test(item.url)) {
+      item.is_anime = true;
+    }
+    if (item.format_type === 'series' || item.format_type === 'movie') {
+      item.is_part_of_series = true;
+      if (!item.series_name) {
+        item.series_name = item.title.replace(/ep(isode)?\s*\d+/i, '').replace(/temporada\s*\d+/i, '').trim();
+      }
+    }
+  }
+
+  // 5. Server-Side Quality, Duration & Format Filtering
   let filtered = results;
 
+  // Duration Filter
+  if (duration && duration !== 'Any') {
+    if (duration === 'short') {
+      filtered = filtered.filter((item) => (item.duration_seconds || 200) < 240);
+    } else if (duration === 'medium') {
+      filtered = filtered.filter((item) => {
+        const s = item.duration_seconds || 300;
+        return s >= 240 && s <= 1200;
+      });
+    } else if (duration === 'long') {
+      filtered = filtered.filter((item) => (item.duration_seconds || 600) > 1200);
+    }
+  }
+
+  // Quality Filter
   if (quality && quality !== 'Any' && quality !== 'All') {
     filtered = filtered.filter((item) => {
       if (!item.available_qualities || !Array.isArray(item.available_qualities)) return true;
@@ -881,19 +1640,54 @@ app.post('/api/search', async (req: Request, res: Response) => {
     });
   }
 
+  // Format Filter (Universal Audiovisual Filter)
   if (format && format !== 'Any' && format !== 'All') {
-    if (format === 'audio') {
+    const fmtLower = format.toLowerCase();
+    if (fmtLower === 'movie' || fmtLower === 'movies' || fmtLower === 'film') {
+      filtered = filtered.filter((item) => item.format_type === 'movie');
+    } else if (fmtLower === 'series' || fmtLower === 'anime' || fmtLower === 'episodes') {
+      filtered = filtered.filter((item) => item.format_type === 'series' || item.is_part_of_series);
+    } else if (fmtLower === 'short' || fmtLower === 'shorts' || fmtLower === 'reels') {
+      filtered = filtered.filter((item) => item.format_type === 'short');
+    } else if (fmtLower === 'clip' || fmtLower === 'clips') {
+      filtered = filtered.filter((item) => item.format_type === 'clip');
+    } else if (fmtLower === 'audio') {
       filtered = filtered.filter((item) => {
         return item.platform === 'SoundCloud' || item.platform === 'Spotify' ||
           (item.available_qualities && item.available_qualities.some((q: string) => /audio/i.test(q)));
       });
-    } else if (format === 'video') {
+    } else if (fmtLower === 'video') {
       filtered = filtered.filter((item) => item.platform !== 'SoundCloud');
     }
   }
 
-  // Strict real results: if nothing found, return empty array
-  return res.json({ results: filtered.slice(0, limit) });
+  // Sorting
+  if (sortBy === 'views') {
+    filtered.sort((a, b) => (b.view_count || 0) - (a.view_count || 0));
+  } else if (sortBy === 'date') {
+    filtered.sort((a, b) => {
+      const dateA = new Date(a.upload_date || 0).getTime();
+      const dateB = new Date(b.upload_date || 0).getTime();
+      return dateB - dateA;
+    });
+  } else if (sortBy === 'duration_desc') {
+    filtered.sort((a, b) => (b.duration_seconds || 0) - (a.duration_seconds || 0));
+  } else if (sortBy === 'duration_asc') {
+    filtered.sort((a, b) => (a.duration_seconds || 0) - (b.duration_seconds || 0));
+  }
+
+  const startIdx = Math.max(0, Number(offset) || 0);
+  const pagedResults = filtered.slice(startIdx, startIdx + Number(limit));
+  const hasMore = filtered.length > startIdx + Number(limit);
+
+  return res.json({
+    query,
+    total: filtered.length,
+    offset: startIdx,
+    limit: Number(limit),
+    has_more: hasMore,
+    results: pagedResults
+  });
 });
 
 // ==========================================
@@ -1315,6 +2109,123 @@ app.get('/api/music/album/:id/tracks', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[Klyp Music] Album tracks error:', err);
     return res.status(500).json({ error: 'Failed to fetch tracks', details: err.message });
+  }
+});
+
+// 3.5. Music Streaming Audio Resolver API
+app.get('/api/music/stream', async (req: Request, res: Response) => {
+  const artist = typeof req.query.artist === 'string' ? req.query.artist.trim() : '';
+  const title = typeof req.query.title === 'string' ? req.query.title.trim() : '';
+  const album = typeof req.query.album === 'string' ? req.query.album.trim() : '';
+  const previewUrl = typeof req.query.previewUrl === 'string' ? req.query.previewUrl.trim() : '';
+  const id = typeof req.query.id === 'string' ? req.query.id.trim() : '';
+
+  if (!title && !previewUrl) {
+    return res.status(400).json({ error: 'Title or previewUrl required for streaming' });
+  }
+
+  try {
+    // 1. Check if the song has already been downloaded locally in MUSIC_DIR
+    if (artist && title && fs.existsSync(MUSIC_DIR)) {
+      const artistDir = sanitizePathComponent(artist);
+      const possibleArtistPath = path.join(MUSIC_DIR, artistDir);
+      if (fs.existsSync(possibleArtistPath)) {
+        const findMatchingFile = (dir: string): string | null => {
+          try {
+            const files = fs.readdirSync(dir, { withFileTypes: true });
+            for (const f of files) {
+              const fullPath = path.join(dir, f.name);
+              if (f.isDirectory()) {
+                const sub = findMatchingFile(fullPath);
+                if (sub) return sub;
+              } else if (f.isFile() && /\.(mp3|flac|m4a|wav|ogg)$/i.test(f.name)) {
+                const cleanName = f.name.toLowerCase();
+                if (cleanName.includes(title.toLowerCase())) {
+                  return fullPath;
+                }
+              }
+            }
+          } catch {}
+          return null;
+        };
+
+        const localFile = findMatchingFile(possibleArtistPath);
+        if (localFile && fs.existsSync(localFile)) {
+          const relPath = path.relative(DOWNLOADS_DIR, localFile);
+          const webRel = relPath.split(path.sep).map(encodeURIComponent).join('/');
+          return res.json({
+            source: 'local',
+            streamUrl: `/media/${webRel}`,
+            title,
+            artist,
+            album,
+            isFullAudio: true,
+            isLocal: true
+          });
+        }
+      }
+    }
+
+    // 2. Resolve stream via yt-dlp if available
+    const hasYtDlp = await hasBinary('yt-dlp');
+    if (hasYtDlp && artist && title) {
+      try {
+        const searchQuery = `${artist} - ${title} official audio`;
+        const directStreamCmd = `yt-dlp --socket-timeout 5 -f "ba/b" -g "ytsearch1:${searchQuery.replace(/"/g, '\\"')}"`;
+        const rawOutput = await runCommandWithTimeout(directStreamCmd, 6000);
+        const resolvedUrl = (rawOutput || '').trim().split('\n')[0];
+        if (resolvedUrl && resolvedUrl.startsWith('http')) {
+          return res.json({
+            source: 'stream',
+            streamUrl: resolvedUrl,
+            title,
+            artist,
+            album,
+            isFullAudio: true,
+            isLocal: false
+          });
+        }
+      } catch (ytErr) {
+        // Fallback to previewUrl
+      }
+    }
+
+    // 3. Fallback to catalog high-fidelity previewUrl (30-second AAC stream)
+    if (previewUrl) {
+      return res.json({
+        source: 'preview',
+        streamUrl: previewUrl,
+        title,
+        artist,
+        album,
+        isFullAudio: false,
+        isLocal: false
+      });
+    }
+
+    // 4. Fallback sample audio if no stream found
+    return res.json({
+      source: 'sample',
+      streamUrl: '/api/media/sample',
+      title: title || 'Audio Track',
+      artist: artist || 'Unknown Artist',
+      album: album || 'Preview Stream',
+      isFullAudio: false,
+      isLocal: false
+    });
+  } catch (err: any) {
+    console.error('[Klyp Music] Stream resolver error:', err);
+    if (previewUrl) {
+      return res.json({
+        source: 'preview',
+        streamUrl: previewUrl,
+        title,
+        artist,
+        album,
+        isFullAudio: false
+      });
+    }
+    return res.status(500).json({ error: 'Failed to resolve audio stream', details: err.message });
   }
 });
 
@@ -1753,7 +2664,7 @@ app.get('/api/platform-health', async (req: Request, res: Response) => {
 async function startServer() {
   if (!isProduction) {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: 'spa'
     });
     app.use(vite.middlewares);

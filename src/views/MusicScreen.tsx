@@ -34,6 +34,10 @@ interface MusicScreenProps {
     quality: '320kbps' | 'lossless'
   ) => Promise<void>;
   showToast: (msg: string) => void;
+  onPlayTrack?: (track: MusicTrack) => void;
+  onPlayAlbum?: (tracks: MusicTrack[], startIndex?: number) => void;
+  currentPlayingTrackId?: string | null;
+  isPlayingGlobal?: boolean;
 }
 
 const FEATURED_ARTISTS = [
@@ -52,7 +56,11 @@ const FEATURED_ARTISTS = [
 export const MusicScreen: React.FC<MusicScreenProps> = ({
   theme,
   onQueueBatchTracks,
-  showToast
+  showToast,
+  onPlayTrack,
+  onPlayAlbum,
+  currentPlayingTrackId,
+  isPlayingGlobal = false
 }) => {
   const isDark = theme === 'dark';
 
@@ -71,9 +79,8 @@ export const MusicScreen: React.FC<MusicScreenProps> = ({
   const [modalAlbum, setModalAlbum] = useState<MusicAlbum | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
-  // Quick single track preview player in search view
-  const [playingSongId, setPlayingSongId] = useState<string | null>(null);
-  const [audioPlayer, setAudioPlayer] = useState<HTMLAudioElement | null>(null);
+  // Loading state for quick album play
+  const [loadingAlbumPlayId, setLoadingAlbumPlayId] = useState<string | null>(null);
 
   // Load a default popular artist on first mount
   useEffect(() => {
@@ -115,27 +122,33 @@ export const MusicScreen: React.FC<MusicScreenProps> = ({
     }
   };
 
-  const handlePlaySongPreview = (song: MusicTrack) => {
-    if (!song.previewUrl) return;
+  // Play an entire album immediately via the global streaming engine
+  const handleQuickPlayAlbum = async (album: MusicAlbum) => {
+    if (!onPlayAlbum) return;
+    setLoadingAlbumPlayId(album.id);
+    try {
+      showToast(`Loading "${album.title}" tracklist for streaming...`);
+      const res = await fetch(`/api/music/album/${album.id}/tracks`);
+      if (!res.ok) throw new Error('Could not fetch album tracklist');
+      const data = await res.json();
+      const tracks: MusicTrack[] = data.tracks || [];
+      if (tracks.length === 0) {
+        showToast('No tracks found in album');
+        return;
+      }
+      onPlayAlbum(tracks, 0);
+      showToast(`Streaming "${album.title}" (${tracks.length} tracks)!`);
+    } catch (err: any) {
+      showToast(err.message || 'Error playing album');
+    } finally {
+      setLoadingAlbumPlayId(null);
+    }
+  };
 
-    if (playingSongId === song.id) {
-      if (audioPlayer) {
-        if (audioPlayer.paused) {
-          audioPlayer.play();
-        } else {
-          audioPlayer.pause();
-          setPlayingSongId(null);
-        }
-      }
-    } else {
-      if (audioPlayer) {
-        audioPlayer.pause();
-      }
-      const audio = new Audio(song.previewUrl);
-      setAudioPlayer(audio);
-      setPlayingSongId(song.id);
-      audio.onended = () => setPlayingSongId(null);
-      audio.play().catch(() => setPlayingSongId(null));
+  // Play a single track using the global streaming player bar
+  const handleTrackStream = (track: MusicTrack) => {
+    if (onPlayTrack) {
+      onPlayTrack(track);
     }
   };
 
@@ -178,7 +191,7 @@ export const MusicScreen: React.FC<MusicScreenProps> = ({
         const res = await fetch(`/api/music/album/${album.id}/tracks`);
         if (res.ok) {
           const data = await res.json();
-          const trks: MusicTrack[] = data.tracks || [];
+          const trks = data.tracks || [];
           if (trks.length > 0) {
             await onQueueBatchTracks(trks, 'mp3', '320kbps');
             totalTracks += trks.length;
@@ -187,41 +200,21 @@ export const MusicScreen: React.FC<MusicScreenProps> = ({
       } catch {}
     }
 
-    showToast(`Successfully queued ${totalTracks} songs from ${discography.artist.name}'s discography!`);
+    showToast(`Successfully queued ${totalTracks} tracks across all albums for ${discography.artist.name}!`);
   };
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6 select-none">
-      {/* 1. Standardized PageHeader */}
+    <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6 pb-32">
+      {/* Top Header */}
       <PageHeader
-        icon={<Disc3 className="w-6 h-6" />}
-        title="Music & Discographies"
-        description="Explore artist discographies, inspect tracklists with previews, and download tagged MP3 / FLAC"
-        badge={{ text: 'ID3v2 & FLAC', variant: 'emerald' }}
+        icon={<Music className="w-5 h-5 text-[#10b981]" />}
+        title="Music Explorer & Streaming"
+        description="Search artists, stream high-fidelity albums, auto-advance tracks, and batch download discographies with embedded ID3 tags."
         theme={theme}
-        actionSlot={
-          selectedArtist ? (
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedArtist(null);
-                setDiscography(null);
-              }}
-              className={`px-3.5 py-2 rounded-lg text-xs font-medium border flex items-center gap-1.5 cursor-pointer transition-colors ${
-                isDark
-                  ? 'bg-[#252526] hover:bg-[#2d2d2d] border-[#2d2d2d] text-gray-300 hover:text-white'
-                  : 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700 shadow-xs'
-              }`}
-            >
-              <ArrowLeft className="w-4 h-4" />
-              <span>Back to Search</span>
-            </button>
-          ) : undefined
-        }
       />
 
-      {/* 2. Search & Artist Explorer SurfaceCard */}
-      <SurfaceCard theme={theme} className="p-5 shadow-sm">
+      {/* Main Search Surface */}
+      <SurfaceCard theme={theme} className="p-4 sm:p-6">
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -230,16 +223,16 @@ export const MusicScreen: React.FC<MusicScreenProps> = ({
           className="flex flex-col sm:flex-row gap-3"
         >
           <div className="relative flex-1">
-            <Search className="w-4 h-4 absolute left-3.5 top-3.5 text-gray-400 pointer-events-none" />
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search artist, album, or song title (e.g. Daft Punk, Coldplay, Queen)..."
-              className={`w-full pl-10 pr-4 py-2.5 rounded-lg text-sm outline-none transition-all border font-mono ${
+              placeholder="Search artist, album, or song title (e.g., Daft Punk, The Weeknd, Queen)..."
+              className={`w-full pl-10 pr-4 py-2.5 rounded-xl border text-sm transition-all outline-none ${
                 isDark
-                  ? 'bg-[#1e1e1e] border-[#2d2d2d] text-white focus:border-[#10b981] focus:ring-1 focus:ring-[#10b981] placeholder:text-gray-500'
-                  : 'bg-slate-50 border-slate-300 text-slate-800 focus:border-[#10b981] focus:ring-1 focus:ring-[#10b981] placeholder:text-slate-400'
+                  ? 'bg-[#1e1e1e] border-[#2d2d2d] text-white placeholder-gray-500 focus:border-[#10b981]'
+                  : 'bg-white border-slate-300 text-slate-900 placeholder-slate-400 focus:border-[#10b981]'
               }`}
             />
           </div>
@@ -247,106 +240,94 @@ export const MusicScreen: React.FC<MusicScreenProps> = ({
           <button
             type="submit"
             disabled={isSearching || !searchQuery.trim()}
-            className="flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg bg-[#10b981] hover:bg-[#059669] text-white font-semibold text-sm shadow-md shadow-[#10b981]/20 disabled:opacity-50 transition-all cursor-pointer shrink-0"
+            className="px-6 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-black font-semibold text-sm transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-md shadow-[#10b981]/20 disabled:opacity-50"
           >
             {isSearching ? (
               <>
-                <Loader2 className="w-4 h-4 animate-spin" />
+                <Loader2 className="w-4 h-4 animate-spin text-black" />
                 <span>Searching...</span>
               </>
             ) : (
               <>
-                <Search className="w-4 h-4" />
-                <span>Search Music</span>
+                <Search className="w-4 h-4 text-black" />
+                <span>Explore Music</span>
               </>
             )}
           </button>
         </form>
 
-        {/* Popular Artist Quick-Pick Chips */}
-        <div className={`flex flex-wrap items-center gap-2 pt-3.5 text-xs ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
-          <span className={`flex items-center gap-1 font-medium shrink-0 ${isDark ? 'text-gray-400' : 'text-slate-600'}`}>
-            <Sparkles className="w-3.5 h-3.5 text-[#10b981]" /> Popular Artists:
+        {/* Quick Artist Tags */}
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <span className="text-xs text-gray-400 font-mono flex items-center gap-1.5">
+            <Sparkles className="w-3.5 h-3.5 text-[#10b981]" />
+            <span>Featured:</span>
           </span>
-          {FEATURED_ARTISTS.map((artist) => {
-            const isCurrent = searchQuery.toLowerCase() === artist.toLowerCase();
-            return (
-              <button
-                key={artist}
-                type="button"
-                onClick={() => {
-                  setSearchQuery(artist);
-                  handleSearch(artist);
-                }}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer border ${
-                  isCurrent
-                    ? 'bg-[#10b981]/20 text-[#10b981] border-[#10b981]/40'
-                    : isDark
-                    ? 'bg-[#1e1e1e] hover:bg-[#282828] border-[#2d2d2d] text-gray-300 hover:text-white'
-                    : 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700 hover:text-slate-900'
-                }`}
-              >
-                {artist}
-              </button>
-            );
-          })}
+          {FEATURED_ARTISTS.map((artist) => (
+            <button
+              key={artist}
+              type="button"
+              onClick={() => {
+                setSearchQuery(artist);
+                handleSearch(artist);
+              }}
+              className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
+                isDark
+                  ? 'bg-[#1e1e1e] border-[#2d2d2d] text-gray-300 hover:text-white hover:border-[#10b981]/50'
+                  : 'bg-slate-100 border-slate-200 text-slate-700 hover:text-slate-900 hover:border-[#10b981]/50'
+              }`}
+            >
+              {artist}
+            </button>
+          ))}
         </div>
       </SurfaceCard>
 
-      {/* 3. Main Content Area */}
+      {/* Main Content Area */}
       <div className="space-y-6">
-        {/* Loading Discography Spinner */}
-        {isLoadingDiscography && (
-          <div className="py-20 flex flex-col items-center justify-center gap-3 text-gray-400">
-            <Loader2 className="w-8 h-8 animate-spin text-[#10b981]" />
-            <p className="text-sm font-medium">Fetching artist releases & high-resolution artwork...</p>
+        {/* Loading Spinner */}
+        {(isSearching || isLoadingDiscography) && (
+          <div className="py-24 flex flex-col items-center justify-center text-gray-400 gap-3">
+            <Loader2 className="w-9 h-9 animate-spin text-[#10b981]" />
+            <p className="text-sm font-medium">
+              {isSearching ? 'Searching worldwide music catalogs...' : 'Loading complete discography & high-res artwork...'}
+            </p>
           </div>
         )}
 
-        {/* Artist Discography View */}
+        {/* Artist Discography Detailed View */}
         {!isLoadingDiscography && selectedArtist && discography && (
           <div className="space-y-6 animate-fadeIn">
             {/* Artist Hero Banner */}
             <div
-              className={`p-6 md:p-8 rounded-xl border flex flex-col md:flex-row items-start md:items-center justify-between gap-6 relative overflow-hidden transition-colors ${
-                isDark ? 'bg-[#252526] border-[#2d2d2d] shadow-xl' : 'bg-white border-slate-200 shadow-sm'
+              className={`p-6 sm:p-8 rounded-2xl border flex flex-col md:flex-row items-center justify-between gap-6 relative overflow-hidden ${
+                isDark ? 'bg-[#252526] border-[#2d2d2d] shadow-2xl' : 'bg-white border-slate-200 shadow-md'
               }`}
             >
-              <div className="flex items-center gap-5 z-10">
-                {selectedArtist.artworkUrl ? (
+              <div className="flex flex-col sm:flex-row items-center gap-6 z-10 text-center sm:text-left">
+                {/* Artist Photo */}
+                <div className="relative w-28 h-28 sm:w-32 sm:h-32 rounded-full overflow-hidden border-2 border-[#10b981]/40 shadow-xl shrink-0 group">
                   <img
-                    src={selectedArtist.artworkUrl}
+                    src={selectedArtist.artworkUrl || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400'}
                     alt={selectedArtist.name}
-                    className={`w-24 h-24 md:w-28 md:h-28 rounded-xl object-cover shadow-xl border shrink-0 ${
-                      isDark ? 'border-[#2d2d2d]' : 'border-slate-200'
-                    }`}
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                   />
-                ) : (
-                  <div className="w-24 h-24 rounded-xl bg-[#10b981]/10 flex items-center justify-center text-[#10b981] shrink-0 border border-[#10b981]/20">
-                    <User className="w-10 h-10" />
-                  </div>
-                )}
+                  <div className="absolute inset-0 bg-black/30" />
+                </div>
 
                 <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[11px] font-mono uppercase tracking-wider text-[#10b981] font-semibold">
-                      {selectedArtist.genres?.[0] || 'Official Artist'}
+                  <div className="flex items-center justify-center sm:justify-start gap-2 mb-1">
+                    <span className="text-xs uppercase tracking-widest font-mono text-[#10b981] font-semibold">
+                      {selectedArtist.disambiguation || 'Verified Artist'}
                     </span>
-                    {selectedArtist.country && selectedArtist.country !== 'Worldwide' && (
-                      <>
-                        <span className="text-gray-500">•</span>
-                        <span className="text-[11px] font-mono text-gray-400">
-                          {selectedArtist.country}
-                        </span>
-                      </>
-                    )}
+                    <span className="text-gray-500">•</span>
+                    <span className="text-xs font-mono text-gray-400">{selectedArtist.country}</span>
                   </div>
 
-                  <h2 className={`text-2xl md:text-3xl font-extrabold tracking-tight ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                  <h2 className={`text-2xl sm:text-4xl font-extrabold tracking-tight mb-2 ${isDark ? 'text-white' : 'text-slate-900'}`}>
                     {selectedArtist.name}
                   </h2>
 
-                  <div className="text-xs text-gray-400 font-mono mt-1.5 flex items-center gap-2 flex-wrap">
+                  <div className="text-xs text-gray-400 font-mono flex flex-wrap items-center justify-center sm:justify-start gap-x-2 gap-y-1">
                     <span>{discography.studioAlbums.length} Studio Albums</span>
                     <span>·</span>
                     <span>{discography.epsAndMiniAlbums.length} EPs & Mini-Albums</span>
@@ -360,10 +341,21 @@ export const MusicScreen: React.FC<MusicScreenProps> = ({
 
               {/* Discography Action Buttons */}
               <div className="flex flex-wrap items-center gap-3 z-10">
+                {discography.studioAlbums.length > 0 && onPlayAlbum && (
+                  <button
+                    type="button"
+                    onClick={() => handleQuickPlayAlbum(discography.studioAlbums[0])}
+                    className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-[#10b981] hover:bg-[#059669] text-black flex items-center gap-2 shadow-md shadow-[#10b981]/20 cursor-pointer transition-all"
+                  >
+                    <Play className="w-4 h-4 fill-current" />
+                    <span>Play Top Album</span>
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={handleDownloadFullDiscography}
-                  className="px-4 py-2.5 rounded-lg text-xs font-semibold bg-[#10b981] hover:bg-[#059669] text-white flex items-center gap-2 shadow-md shadow-[#10b981]/20 cursor-pointer transition-all"
+                  className="px-4 py-2.5 rounded-xl text-xs font-semibold border border-white/20 bg-white/10 hover:bg-white/20 text-white flex items-center gap-2 cursor-pointer transition-all"
                 >
                   <Download className="w-4 h-4" />
                   <span>Download Full Discography</span>
@@ -456,81 +448,104 @@ export const MusicScreen: React.FC<MusicScreenProps> = ({
                   );
                 }
 
-                return items.map((album) => (
-                  <div
-                    key={album.id}
-                    className={`group rounded-xl border flex flex-col overflow-hidden transition-all duration-200 hover:scale-[1.02] hover:shadow-lg ${
-                      isDark
-                        ? 'bg-[#252526] border-[#2d2d2d] hover:border-[#10b981]/50'
-                        : 'bg-white border-slate-200 hover:border-[#10b981]/50 shadow-sm'
-                    }`}
-                  >
-                    {/* Artwork Container */}
-                    <div className="relative aspect-square w-full overflow-hidden bg-black/40">
-                      <img
-                        src={album.artworkUrl || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400'}
-                        alt={album.title}
-                        loading="lazy"
-                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                      />
+                return items.map((album) => {
+                  const isLoadingThisAlbum = loadingAlbumPlayId === album.id;
+                  return (
+                    <div
+                      key={album.id}
+                      className={`group rounded-xl border flex flex-col overflow-hidden transition-all duration-200 hover:scale-[1.02] hover:shadow-lg ${
+                        isDark
+                          ? 'bg-[#252526] border-[#2d2d2d] hover:border-[#10b981]/50'
+                          : 'bg-white border-slate-200 hover:border-[#10b981]/50 shadow-sm'
+                      }`}
+                    >
+                      {/* Artwork Container */}
+                      <div className="relative aspect-square w-full overflow-hidden bg-black/40">
+                        <img
+                          src={album.artworkUrl || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400'}
+                          alt={album.title}
+                          loading="lazy"
+                          className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                        />
 
-                      {/* Year badge */}
-                      <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur-md text-[10px] font-mono text-gray-300 font-semibold">
-                        {album.releaseYear}
+                        {/* Year badge */}
+                        <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur-md text-[10px] font-mono text-gray-300 font-semibold">
+                          {album.releaseYear}
+                        </div>
+
+                        {/* Quick Stream Play Button Badge in Bottom-Right */}
+                        {onPlayAlbum && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleQuickPlayAlbum(album);
+                            }}
+                            disabled={isLoadingThisAlbum}
+                            className="absolute bottom-2 right-2 w-9 h-9 rounded-full bg-[#10b981] hover:bg-[#059669] text-black flex items-center justify-center shadow-lg transition-all opacity-0 group-hover:opacity-100 hover:scale-110 active:scale-95 cursor-pointer z-10"
+                            title={`Play "${album.title}"`}
+                          >
+                            {isLoadingThisAlbum ? (
+                              <Loader2 className="w-4 h-4 animate-spin text-black" />
+                            ) : (
+                              <Play className="w-4 h-4 fill-current ml-0.5" />
+                            )}
+                          </button>
+                        )}
+
+                        {/* Hover action overlay */}
+                        <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 p-2 backdrop-blur-[1px]">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setModalAlbum(album);
+                              setIsModalOpen(true);
+                            }}
+                            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-white text-black hover:bg-gray-200 transition-colors cursor-pointer shadow-md"
+                          >
+                            Tracklist
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleQuickDownloadAlbum(album)}
+                            title="Quick download full album in MP3 320k"
+                            className="p-2 rounded-lg bg-[#10b981] hover:bg-[#059669] text-white transition-colors cursor-pointer shadow-md"
+                          >
+                            <Download className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
 
-                      {/* Hover action overlay */}
-                      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 p-2 backdrop-blur-[1px]">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setModalAlbum(album);
-                            setIsModalOpen(true);
-                          }}
-                          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-white text-black hover:bg-gray-200 transition-colors cursor-pointer shadow-md"
-                        >
-                          Tracklist
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleQuickDownloadAlbum(album)}
-                          title="Quick download full album in MP3 320k"
-                          className="p-2 rounded-lg bg-[#10b981] hover:bg-[#059669] text-white transition-colors cursor-pointer shadow-md"
-                        >
-                          <Download className="w-4 h-4" />
-                        </button>
+                      {/* Album metadata info */}
+                      <div className="p-3 flex flex-col flex-1 justify-between">
+                        <div>
+                          <h4
+                            onClick={() => {
+                              setModalAlbum(album);
+                              setIsModalOpen(true);
+                            }}
+                            title={album.title}
+                            className={`text-xs font-bold truncate hover:text-[#10b981] cursor-pointer ${
+                              isDark ? 'text-white' : 'text-slate-900'
+                            }`}
+                          >
+                            {album.title}
+                          </h4>
+                          <p className={`text-[11px] truncate mt-0.5 ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
+                            {album.artist}
+                          </p>
+                        </div>
+
+                        <div className={`mt-2.5 pt-2 border-t flex items-center justify-between text-[10px] font-mono ${
+                          isDark ? 'border-[#2d2d2d] text-gray-400' : 'border-slate-200 text-slate-500'
+                        }`}>
+                          <span>{album.trackCount} Tracks</span>
+                          <span className="text-[#10b981]">{album.genre}</span>
+                        </div>
                       </div>
                     </div>
-
-                    {/* Album metadata info */}
-                    <div className="p-3 flex flex-col flex-1 justify-between">
-                      <div>
-                        <h4
-                          onClick={() => {
-                            setModalAlbum(album);
-                            setIsModalOpen(true);
-                          }}
-                          title={album.title}
-                          className={`text-xs font-bold truncate hover:text-[#10b981] cursor-pointer ${
-                            isDark ? 'text-white' : 'text-slate-900'
-                          }`}
-                        >
-                          {album.title}
-                        </h4>
-                        <p className={`text-[11px] truncate mt-0.5 ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
-                          {album.artist}
-                        </p>
-                      </div>
-
-                      <div className={`mt-2.5 pt-2 border-t flex items-center justify-between text-[10px] font-mono ${
-                        isDark ? 'border-[#2d2d2d] text-gray-400' : 'border-slate-200 text-slate-500'
-                      }`}>
-                        <span>{album.trackCount} Tracks</span>
-                        <span className="text-[#10b981]">{album.genre}</span>
-                      </div>
-                    </div>
-                  </div>
-                ));
+                  );
+                });
               })()}
             </div>
           </div>
@@ -616,6 +631,16 @@ export const MusicScreen: React.FC<MusicScreenProps> = ({
                         </div>
 
                         <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 p-2">
+                          {onPlayAlbum && (
+                            <button
+                              type="button"
+                              onClick={() => handleQuickPlayAlbum(album)}
+                              className="p-2 rounded-lg bg-[#10b981] text-black hover:bg-[#059669] cursor-pointer"
+                              title="Stream album"
+                            >
+                              <Play className="w-3.5 h-3.5 fill-current" />
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => {
@@ -629,7 +654,7 @@ export const MusicScreen: React.FC<MusicScreenProps> = ({
                           <button
                             type="button"
                             onClick={() => handleQuickDownloadAlbum(album)}
-                            className="p-2 rounded-lg bg-[#10b981] hover:bg-[#059669] text-white cursor-pointer"
+                            className="p-2 rounded-lg bg-white/20 hover:bg-white/30 text-white cursor-pointer"
                           >
                             <Download className="w-3.5 h-3.5" />
                           </button>
@@ -683,7 +708,7 @@ export const MusicScreen: React.FC<MusicScreenProps> = ({
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                   {searchResults.tracks.map((track) => {
-                    const isPlaying = playingSongId === track.id;
+                    const isPlaying = currentPlayingTrackId === track.id && isPlayingGlobal;
 
                     return (
                       <div
@@ -703,24 +728,30 @@ export const MusicScreen: React.FC<MusicScreenProps> = ({
                             alt={track.title}
                             className="w-full h-full object-cover"
                           />
-                          {track.previewUrl && (
-                            <button
-                              type="button"
-                              onClick={() => handlePlaySongPreview(track)}
-                              className="absolute inset-0 bg-black/50 flex items-center justify-center text-white opacity-90 hover:opacity-100 cursor-pointer"
-                            >
-                              {isPlaying ? (
-                                <Pause className="w-5 h-5 text-[#10b981]" />
-                              ) : (
-                                <Play className="w-5 h-5 ml-0.5 text-white" />
-                              )}
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleTrackStream(track)}
+                            className="absolute inset-0 bg-black/50 flex items-center justify-center text-white opacity-90 hover:opacity-100 cursor-pointer"
+                            title={isPlaying ? 'Pause' : 'Stream track'}
+                          >
+                            {isPlaying ? (
+                              <Pause className="w-5 h-5 text-[#10b981] fill-current" />
+                            ) : (
+                              <Play className="w-5 h-5 ml-0.5 text-white fill-current" />
+                            )}
+                          </button>
                         </div>
 
                         {/* Track Info */}
                         <div className="flex-1 min-w-0">
-                          <h4 className={`text-xs font-bold truncate ${isDark ? 'text-white' : 'text-slate-800'}`}>{track.title}</h4>
+                          <h4
+                            onClick={() => handleTrackStream(track)}
+                            className={`text-xs font-bold truncate cursor-pointer hover:text-[#10b981] ${
+                              isPlaying ? 'text-[#10b981]' : isDark ? 'text-white' : 'text-slate-800'
+                            }`}
+                          >
+                            {track.title}
+                          </h4>
                           <p className={`text-[11px] truncate ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>{track.artist}</p>
                           <div className="text-[10px] text-gray-500 font-mono flex items-center gap-1.5 mt-0.5">
                             <span className="truncate max-w-[120px]">{track.album}</span>
@@ -757,6 +788,9 @@ export const MusicScreen: React.FC<MusicScreenProps> = ({
         }}
         album={modalAlbum}
         theme={theme}
+        onPlayAlbum={onPlayAlbum}
+        currentPlayingTrackId={currentPlayingTrackId}
+        isPlayingGlobal={isPlayingGlobal}
         onDownloadTracks={async (selectedTracks, format, quality) => {
           await onQueueBatchTracks(selectedTracks, format, quality);
           showToast(

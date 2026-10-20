@@ -1,6 +1,6 @@
 {
   "name": "Klyp",
-  "description": "Multi-platform video downloader, queue manager, search explorer, and subtitle downloader.",
+  "description": "Universal audiovisual media downloader, multi-episode series and anime extraction, clean vertical shorts, high-fidelity music streaming, and multi-platform explorer.",
   "permissions": [],
   "capabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

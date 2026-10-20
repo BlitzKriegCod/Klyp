@@ -8,7 +8,9 @@ import {
   Square,
   Disc3,
   Layers,
-  Loader2
+  Loader2,
+  Sparkles,
+  Radio
 } from 'lucide-react';
 import type { MusicAlbum, MusicTrack } from '../types/music';
 
@@ -22,6 +24,9 @@ interface AlbumTracklistModalProps {
     format: 'mp3' | 'flac',
     quality: '320kbps' | 'lossless'
   ) => void;
+  onPlayAlbum?: (tracks: MusicTrack[], startIndex?: number) => void;
+  currentPlayingTrackId?: string | null;
+  isPlayingGlobal?: boolean;
 }
 
 export const AlbumTracklistModal: React.FC<AlbumTracklistModalProps> = ({
@@ -29,16 +34,19 @@ export const AlbumTracklistModal: React.FC<AlbumTracklistModalProps> = ({
   onClose,
   album,
   theme,
-  onDownloadTracks
+  onDownloadTracks,
+  onPlayAlbum,
+  currentPlayingTrackId,
+  isPlayingGlobal = false
 }) => {
   const [tracks, setTracks] = useState<MusicTrack[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Audio preview player state
-  const [playingTrackId, setPlayingTrackId] = useState<string | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Audio preview fallback state (used only if global streaming player is not active)
+  const [localPlayingTrackId, setLocalPlayingTrackId] = useState<string | null>(null);
+  const localAudioRef = useRef<HTMLAudioElement | null>(null);
 
   // Format selection
   const [selectedFormat, setSelectedFormat] = useState<'mp3' | 'flac'>('mp3');
@@ -49,9 +57,9 @@ export const AlbumTracklistModal: React.FC<AlbumTracklistModalProps> = ({
     if (!isOpen || !album) {
       setTracks([]);
       setSelectedIds(new Set());
-      setPlayingTrackId(null);
-      if (audioRef.current) {
-        audioRef.current.pause();
+      setLocalPlayingTrackId(null);
+      if (localAudioRef.current) {
+        localAudioRef.current.pause();
       }
       return;
     }
@@ -82,39 +90,45 @@ export const AlbumTracklistModal: React.FC<AlbumTracklistModalProps> = ({
 
     return () => {
       isMounted = false;
-      if (audioRef.current) {
-        audioRef.current.pause();
+      if (localAudioRef.current) {
+        localAudioRef.current.pause();
       }
     };
   }, [isOpen, album]);
 
-  // Handle Audio preview toggle
-  const togglePlayTrack = (track: MusicTrack) => {
+  // Handle Play track action
+  const handleTrackPlay = (track: MusicTrack, index: number) => {
+    if (onPlayAlbum && tracks.length > 0) {
+      onPlayAlbum(tracks, index);
+      return;
+    }
+
+    // Fallback local preview
     if (!track.previewUrl) return;
 
-    if (playingTrackId === track.id) {
-      if (audioRef.current) {
-        if (audioRef.current.paused) {
-          audioRef.current.play();
+    if (localPlayingTrackId === track.id) {
+      if (localAudioRef.current) {
+        if (localAudioRef.current.paused) {
+          localAudioRef.current.play();
         } else {
-          audioRef.current.pause();
-          setPlayingTrackId(null);
+          localAudioRef.current.pause();
+          setLocalPlayingTrackId(null);
         }
       }
     } else {
-      if (audioRef.current) {
-        audioRef.current.pause();
+      if (localAudioRef.current) {
+        localAudioRef.current.pause();
       }
       const audio = new Audio(track.previewUrl);
-      audioRef.current = audio;
-      setPlayingTrackId(track.id);
+      localAudioRef.current = audio;
+      setLocalPlayingTrackId(track.id);
 
       audio.onended = () => {
-        setPlayingTrackId(null);
+        setLocalPlayingTrackId(null);
       };
 
       audio.play().catch(() => {
-        setPlayingTrackId(null);
+        setLocalPlayingTrackId(null);
       });
     }
   };
@@ -218,8 +232,27 @@ export const AlbumTracklistModal: React.FC<AlbumTracklistModalProps> = ({
               )}
             </div>
 
-            {/* Format & Quality Selector */}
-            <div className="flex flex-wrap items-center gap-3 pt-2">
+            {/* Action Bar: Play Album CTA & Format Selector */}
+            <div className="flex flex-wrap items-center gap-3 pt-1">
+              {/* Play Album Streaming Button */}
+              {onPlayAlbum && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (tracks.length > 0) {
+                      onPlayAlbum(tracks, 0);
+                    }
+                  }}
+                  disabled={tracks.length === 0}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#10b981] hover:bg-[#059669] text-black font-semibold text-xs transition-all shadow-md shadow-[#10b981]/25 hover:scale-102 cursor-pointer disabled:opacity-50"
+                  title="Stream this full album continuously"
+                >
+                  <Play className="w-4 h-4 fill-current" />
+                  <span>Play Album</span>
+                </button>
+              )}
+
+              {/* Format Switcher */}
               <div className="flex items-center gap-1.5 text-xs text-gray-400">
                 <span>Format:</span>
                 <div
@@ -335,18 +368,20 @@ export const AlbumTracklistModal: React.FC<AlbumTracklistModalProps> = ({
 
           {!loading &&
             !error &&
-            tracks.map((track) => {
+            tracks.map((track, idx) => {
               const isSelected = selectedIds.has(track.id);
-              const isPlaying = playingTrackId === track.id;
+              const isGloballyPlaying = currentPlayingTrackId === track.id;
+              const isLocalPlaying = localPlayingTrackId === track.id;
+              const isPlaying = isGloballyPlaying ? isPlayingGlobal : isLocalPlaying;
 
               return (
                 <div
                   key={track.id}
                   className={`group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${
-                    isPlaying
+                    isGloballyPlaying
                       ? isDark
                         ? 'bg-[#10b981]/15 border border-[#10b981]/30 text-white'
-                        : 'bg-[#10b981]/10 border border-[#10b981]/30'
+                        : 'bg-[#10b981]/10 border border-[#10b981]/30 text-slate-900'
                       : isDark
                       ? 'hover:bg-[#1e1e1e]'
                       : 'hover:bg-slate-100'
@@ -365,35 +400,35 @@ export const AlbumTracklistModal: React.FC<AlbumTracklistModalProps> = ({
                     )}
                   </button>
 
-                  {/* Play preview button / Track Number */}
+                  {/* Play streaming button / Track Number */}
                   <div className="w-8 h-8 flex items-center justify-center shrink-0">
-                    {track.previewUrl ? (
-                      <button
-                        type="button"
-                        onClick={() => togglePlayTrack(track)}
-                        title={isPlaying ? 'Pause 30s preview' : 'Play 30s audio preview'}
-                        className={`w-7 h-7 rounded-full flex items-center justify-center transition-transform hover:scale-110 cursor-pointer ${
-                          isPlaying
-                            ? 'bg-[#10b981] text-black'
-                            : 'bg-[#10b981]/20 text-[#10b981] hover:bg-[#10b981] hover:text-black'
-                        }`}
-                      >
-                        {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 ml-0.5" />}
-                      </button>
-                    ) : (
-                      <span className="font-mono text-xs text-gray-500">
-                        {String(track.trackNumber).padStart(2, '0')}
-                      </span>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleTrackPlay(track, idx)}
+                      title={isPlaying ? 'Pause' : 'Stream track'}
+                      className={`w-7 h-7 rounded-full flex items-center justify-center transition-transform hover:scale-110 cursor-pointer ${
+                        isPlaying
+                          ? 'bg-[#10b981] text-black shadow-sm'
+                          : 'bg-[#10b981]/20 text-[#10b981] hover:bg-[#10b981] hover:text-black'
+                      }`}
+                    >
+                      {isPlaying ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 ml-0.5 fill-current" />}
+                    </button>
                   </div>
 
                   {/* Track Details */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <p
-                        onClick={() => toggleTrackSelection(track.id)}
+                        onClick={() => handleTrackPlay(track, idx)}
                         className={`text-sm font-medium truncate cursor-pointer ${
-                          isSelected ? (isDark ? 'text-white' : 'text-slate-900') : 'text-gray-400'
+                          isGloballyPlaying
+                            ? 'text-[#10b981] font-semibold'
+                            : isSelected
+                            ? isDark
+                              ? 'text-white'
+                              : 'text-slate-900'
+                            : 'text-gray-400'
                         }`}
                       >
                         {track.title}
@@ -434,10 +469,21 @@ export const AlbumTracklistModal: React.FC<AlbumTracklistModalProps> = ({
         >
           <div className="text-xs text-gray-400 font-mono flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-[#10b981] animate-pulse" />
-            <span>Ready for batch download in {selectedFormat.toUpperCase()} ({selectedQuality})</span>
+            <span>Ready for streaming & batch download in {selectedFormat.toUpperCase()} ({selectedQuality})</span>
           </div>
 
           <div className="flex items-center gap-3 w-full sm:w-auto">
+            {onPlayAlbum && tracks.length > 0 && (
+              <button
+                type="button"
+                onClick={() => onPlayAlbum(tracks, 0)}
+                className="px-4 py-2.5 rounded-xl font-medium text-xs bg-white/10 hover:bg-white/20 text-white flex items-center justify-center gap-2 cursor-pointer transition-all border border-white/10"
+              >
+                <Play className="w-4 h-4 fill-current" />
+                <span>Stream Album</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={handleDownloadSelected}
@@ -452,14 +498,13 @@ export const AlbumTracklistModal: React.FC<AlbumTracklistModalProps> = ({
               type="button"
               onClick={handleDownloadFullAlbum}
               disabled={tracks.length === 0}
-              className={`flex-1 sm:flex-none px-4 py-2.5 rounded-xl font-medium text-xs border flex items-center justify-center gap-2 cursor-pointer transition-colors ${
+              className={`flex-1 sm:flex-none px-4 py-2.5 rounded-xl font-medium text-xs border transition-colors flex items-center justify-center gap-2 cursor-pointer ${
                 isDark
-                  ? 'border-[#2d2d2d] bg-[#252526] hover:bg-[#2d2d2d] text-white'
-                  : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-800'
+                  ? 'border-[#3f3f46] text-gray-200 hover:bg-[#2d2d2d]'
+                  : 'border-slate-300 text-slate-700 hover:bg-slate-100'
               }`}
             >
-              <Layers className="w-4 h-4 text-[#10b981]" />
-              <span>Download Full Album ({tracks.length})</span>
+              <span>Download All ({tracks.length})</span>
             </button>
           </div>
         </div>

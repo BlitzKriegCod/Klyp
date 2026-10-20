@@ -93,6 +93,13 @@ export interface SearchResult {
   series_name?: string;
   episode_number?: number;
   entries?: any[];
+  
+  // Audiovisual format classification
+  format_type?: 'movie' | 'series' | 'short' | 'clip';
+  is_anime?: boolean;
+  total_episodes?: number;
+  total_seasons?: number;
+  seasons_summary?: string;
 }
 
 export interface SubtitleItem {

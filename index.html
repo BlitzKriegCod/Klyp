@@ -2,12 +2,53 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      (function() {
+        // Prevent Vite HMR WebSocket unhandled errors in iframe environment
+        var OrigWebSocket = window.WebSocket;
+        if (OrigWebSocket) {
+          window.WebSocket = function(url, protocols) {
+            var ws = protocols !== undefined ? new OrigWebSocket(url, protocols) : new OrigWebSocket(url);
+            if (protocols === 'vite-hmr' || (typeof url === 'string' && url.indexOf('vite') !== -1)) {
+              ws.addEventListener('error', function(e) {
+                e.preventDefault();
+                if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+              });
+            }
+            return ws;
+          };
+          window.WebSocket.prototype = OrigWebSocket.prototype;
+          if (OrigWebSocket.CONNECTING !== undefined) {
+            window.WebSocket.CONNECTING = OrigWebSocket.CONNECTING;
+            window.WebSocket.OPEN = OrigWebSocket.OPEN;
+            window.WebSocket.CLOSING = OrigWebSocket.CLOSING;
+            window.WebSocket.CLOSED = OrigWebSocket.CLOSED;
+          }
+        }
+
+        window.addEventListener('unhandledrejection', function(e) {
+          var msg = '' + (e && e.reason && (e.reason.message || e.reason));
+          if (msg.indexOf('WebSocket') !== -1 || msg.indexOf('vite') !== -1) {
+            e.preventDefault();
+            if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+          }
+        }, true);
+
+        window.addEventListener('error', function(e) {
+          var msg = '' + (e && (e.message || e.error));
+          if (msg.indexOf('WebSocket') !== -1 || msg.indexOf('vite') !== -1) {
+            e.preventDefault();
+            if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+          }
+        }, true);
+      })();
+    </script>
     <link rel="icon" type="image/svg+xml" href="/assets/klyp_logo.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Klyp</title>
-    <meta name="description" content="Multi-platform video downloader, queue manager, search explorer, and subtitle downloader." />
+    <meta name="description" content="Universal audiovisual media downloader, multi-episode series and anime extraction, clean vertical shorts, high-fidelity music streaming, and multi-platform explorer." />
     <meta property="og:title" content="Klyp" />
-    <meta property="og:description" content="Multi-platform video downloader, queue manager, search explorer, and subtitle downloader." />
+    <meta property="og:description" content="Universal audiovisual media downloader, multi-episode series and anime extraction, clean vertical shorts, high-fidelity music streaming, and multi-platform explorer." />
   </head>
   <body class="bg-[#1e1e1e] text-[#d4d4d4] antialiased selection:bg-[#10b981] selection:text-white">
     <div id="root"></div>

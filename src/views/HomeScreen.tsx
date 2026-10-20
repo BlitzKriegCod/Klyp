@@ -21,19 +21,24 @@ import {
   Music,
   Film,
   Activity,
-  X
+  X,
+  Upload,
+  SlidersHorizontal,
+  Check
 } from 'lucide-react';
 import { DownloadTask, DownloadHistory } from '../types';
 import { ScreenType } from '../components/Sidebar';
 import { PageHeader } from '../components/common/PageHeader';
 import { SurfaceCard } from '../components/common/SurfaceCard';
 
+type FormatPreset = 'auto' | '1080p' | '720p' | 'mp3';
+
 interface HomeScreenProps {
   onNavigate: (screen: ScreenType) => void;
   queue: DownloadTask[];
   history?: DownloadHistory[];
-  onAddUrlToQueue: (url: string) => Promise<void>;
-  onBatchAddUrlsToQueue?: (urls: string[]) => Promise<{ success: number; failed: number; errors?: { url: string; error: string }[] }>;
+  onAddUrlToQueue: (url: string, qualityPreset?: string) => Promise<void>;
+  onBatchAddUrlsToQueue?: (urls: string[], qualityPreset?: string) => Promise<{ success: number; failed: number; errors?: { url: string; error: string }[] }>;
   onStartTask?: (taskId: string) => void;
   onStopTask?: (taskId: string) => void;
   onPlayMedia?: (title: string, url: string, thumb?: string) => void;
@@ -63,6 +68,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 }) => {
   const [urlInput, setUrlInput] = useState<string>('');
   const [isBatchMode, setIsBatchMode] = useState<boolean>(false);
+  const [formatPreset, setFormatPreset] = useState<FormatPreset>('auto');
+  const [isDraggingFile, setIsDraggingFile] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
   const [pastedFeedback, setPastedFeedback] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<{
@@ -83,7 +90,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
   const isDark = theme === 'dark';
   const logoSrc = isDark ? '/assets/klyp_logo.svg' : '/assets/klyp_logo_light.svg';
-  const inputRef = useRef<HTMLTextAreaElement | HTMLInputElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Check backend engine health on mount
   useEffect(() => {
@@ -163,7 +170,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     // Multi-line / batch mode execution
     if (urls.length > 1 && onBatchAddUrlsToQueue) {
       try {
-        const result = await onBatchAddUrlsToQueue(urls);
+        const result = await onBatchAddUrlsToQueue(urls, formatPreset);
         if (result.success > 0) {
           setUrlInput('');
           setFeedback({
@@ -203,12 +210,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     // Single URL execution
     const singleUrl = urls[0];
     try {
-      await onAddUrlToQueue(singleUrl);
+      await onAddUrlToQueue(singleUrl, formatPreset);
       setUrlInput('');
       setFeedback({
         type: 'success',
-        title: 'Media Identified',
-        message: 'Stream metadata extracted successfully. Quality dialog opened for confirmation.'
+        title: 'Media Queued',
+        message: `Link identified and dispatched to queue with preset "${formatPreset.toUpperCase()}".`
       });
     } catch (err: any) {
       const errorMsg: string = err?.message || 'Failed to extract video information';
@@ -225,8 +232,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       } else if (lower.includes('format') || lower.includes('unsupported') || lower.includes('extractor')) {
         suggestion = 'Try extracting as audio-only or inspect format support in Settings.';
         fallbackAction = {
-          label: 'Open Settings',
-          action: () => onNavigate('settings')
+          label: 'Switch to MP3',
+          action: () => {
+            setFormatPreset('mp3');
+            handleSubmit();
+          }
         };
       } else {
         fallbackAction = {
@@ -237,7 +247,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
       setFeedback({
         type: 'error',
-        title: 'Extraction Error',
+        title: 'Extraction Notice',
         message: errorMsg,
         suggestion,
         fallbackAction
@@ -281,13 +291,65 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       setPastedFeedback(true);
       setTimeout(() => setPastedFeedback(false), 2000);
       setFeedback(null);
-    } catch (e: any) {
+    } catch {
       setFeedback({
         type: 'warning',
         title: 'Clipboard Access',
         message: 'Could not access clipboard directly. Please use Ctrl+V / Cmd+V into the input box.'
       });
     }
+  };
+
+  // Drag and Drop File Handlers (.txt, .m3u, .urls)
+  const handleFileDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDraggingFile(false);
+
+    const files = e.dataTransfer.files;
+    if (files.length === 0) return;
+
+    const file = files[0];
+    readTextFile(file);
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      readTextFile(files[0]);
+    }
+  };
+
+  const readTextFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result as string;
+      if (!content) return;
+
+      const links = parseUrls(content);
+      if (links.length > 0) {
+        setIsBatchMode(true);
+        setUrlInput(links.join('\n'));
+        setFeedback({
+          type: 'success',
+          title: 'File Imported',
+          message: `Parsed ${links.length} valid links from "${file.name}". Ready to queue!`
+        });
+      } else {
+        setFeedback({
+          type: 'warning',
+          title: 'No Valid URLs Found',
+          message: `File "${file.name}" was read, but no http:// or https:// links were found.`
+        });
+      }
+    };
+    reader.onerror = () => {
+      setFeedback({
+        type: 'error',
+        title: 'File Read Error',
+        message: `Failed to read "${file.name}". Please ensure it is a plain text file.`
+      });
+    };
+    reader.readAsText(file);
   };
 
   const sampleLinks = [
@@ -356,7 +418,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       <PageHeader
         icon={<img src={logoSrc} alt="Klyp Logo" className="w-7 h-7" />}
         title="Klyp"
-        description="Download videos, audio discographies, and subtitles from multiple platforms with ease"
+        description="Download videos, audio discographies, and subtitles with resilient engine fallbacks"
         badge={{
           text: `Emerald Engine • yt-dlp ${engineHealth.ytdlp_version.split(' ')[0]}`,
           variant: engineHealth.status === 'operational' ? 'emerald' : 'amber'
@@ -379,230 +441,309 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         theme={theme}
       />
 
-      {/* URL Input Section with Single / Multi-line Batch Mode & Clipboard */}
-      <SurfaceCard theme={theme} className="p-5 sm:p-6 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <div className="flex items-center gap-2">
-            <Download className="w-4 h-4 text-[#10b981]" />
-            <h2 className={`text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-gray-300' : 'text-slate-700'}`}>
-              Media Download Input
-            </h2>
-            {isBatchMode && (
-              <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-[#10b981]/15 text-[#10b981] border border-[#10b981]/30 font-medium">
-                Batch Mode {detectedUrls.length > 0 && `(${detectedUrls.length} links)`}
-              </span>
-            )}
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handlePasteClipboard}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer border ${
-                pastedFeedback
-                  ? 'bg-[#10b981]/20 border-[#10b981]/40 text-[#10b981]'
-                  : isDark
-                  ? 'bg-[#1e1e1e] hover:bg-[#282828] border-[#2d2d2d] text-gray-300 hover:text-white'
-                  : 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700 hover:text-slate-900'
-              }`}
-              title="Read URL from your clipboard"
-            >
-              {pastedFeedback ? (
-                <>
-                  <ClipboardCheck className="w-3.5 h-3.5 text-[#10b981]" />
-                  <span>Pasted!</span>
-                </>
-              ) : (
-                <>
-                  <Clipboard className="w-3.5 h-3.5 text-gray-400" />
-                  <span>Paste Clipboard</span>
-                </>
+      {/* URL Input Section with Quick Preset Selectors & Drag-and-Drop */}
+      <SurfaceCard
+        theme={theme}
+        className={`p-5 sm:p-6 shadow-sm transition-all duration-200 relative ${
+          isDraggingFile ? 'border-2 border-dashed border-[#10b981] bg-[#10b981]/5' : ''
+        }`}
+      >
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            setIsDraggingFile(true);
+          }}
+          onDragLeave={() => setIsDraggingFile(false)}
+          onDrop={handleFileDrop}
+        >
+          {/* Header controls: Title & actions */}
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <div className="flex items-center gap-2">
+              <Download className="w-4 h-4 text-[#10b981]" />
+              <h2 className={`text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-gray-300' : 'text-slate-700'}`}>
+                Media Download Input
+              </h2>
+              {isBatchMode && (
+                <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-[#10b981]/15 text-[#10b981] border border-[#10b981]/30 font-medium">
+                  Batch Mode {detectedUrls.length > 0 && `(${detectedUrls.length} links)`}
+                </span>
               )}
-            </button>
+            </div>
 
-            <button
-              type="button"
-              onClick={() => setIsBatchMode(!isBatchMode)}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer border ${
-                isBatchMode
-                  ? 'bg-[#10b981]/15 border-[#10b981]/40 text-[#10b981]'
-                  : isDark
-                  ? 'bg-[#1e1e1e] hover:bg-[#282828] border-[#2d2d2d] text-gray-400 hover:text-gray-200'
-                  : 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-600 hover:text-slate-800'
-              }`}
-            >
-              <Layers className="w-3.5 h-3.5" />
-              <span>{isBatchMode ? 'Single Mode' : 'Multi-Line Mode'}</span>
-            </button>
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* File import button */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".txt,.m3u,.urls,.m3u8"
+                onChange={handleFileInputChange}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer border ${
+                  isDark
+                    ? 'bg-[#1e1e1e] hover:bg-[#282828] border-[#2d2d2d] text-gray-300 hover:text-white'
+                    : 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700 hover:text-slate-900'
+                }`}
+                title="Drop or upload a .txt or .m3u link list file"
+              >
+                <Upload className="w-3.5 h-3.5 text-gray-400" />
+                <span>Import File</span>
+              </button>
+
+              {/* Paste clipboard button */}
+              <button
+                type="button"
+                onClick={handlePasteClipboard}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer border ${
+                  pastedFeedback
+                    ? 'bg-[#10b981]/20 border-[#10b981]/40 text-[#10b981]'
+                    : isDark
+                    ? 'bg-[#1e1e1e] hover:bg-[#282828] border-[#2d2d2d] text-gray-300 hover:text-white'
+                    : 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700 hover:text-slate-900'
+                }`}
+                title="Paste URLs from clipboard"
+              >
+                {pastedFeedback ? (
+                  <>
+                    <ClipboardCheck className="w-3.5 h-3.5 text-[#10b981]" />
+                    <span>Pasted!</span>
+                  </>
+                ) : (
+                  <>
+                    <Clipboard className="w-3.5 h-3.5 text-gray-400" />
+                    <span>Paste Clipboard</span>
+                  </>
+                )}
+              </button>
+
+              {/* Mode toggle */}
+              <button
+                type="button"
+                onClick={() => setIsBatchMode(!isBatchMode)}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer border ${
+                  isBatchMode
+                    ? 'bg-[#10b981]/15 border-[#10b981]/40 text-[#10b981]'
+                    : isDark
+                    ? 'bg-[#1e1e1e] hover:bg-[#282828] border-[#2d2d2d] text-gray-400 hover:text-gray-200'
+                    : 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-600 hover:text-slate-800'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>{isBatchMode ? 'Single Mode' : 'Multi-Line Mode'}</span>
+              </button>
+            </div>
           </div>
-        </div>
 
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <div className="flex flex-col sm:flex-row gap-3">
-            <div className="relative flex-1">
-              {isBatchMode ? (
-                <textarea
-                  ref={inputRef as React.RefObject<HTMLTextAreaElement>}
-                  rows={4}
-                  value={urlInput}
-                  onChange={(e) => setUrlInput(e.target.value)}
-                  placeholder="Paste multiple URLs (one per line, up to 25 links)&#10;https://www.youtube.com/watch?v=...&#10;https://vimeo.com/..."
-                  disabled={loading}
-                  className={`w-full px-4 py-2.5 rounded-lg border font-mono text-sm focus:outline-none focus:border-[#10b981] focus:ring-1 focus:ring-[#10b981] transition-all resize-y ${
-                    isDark
-                      ? 'bg-[#1e1e1e] border-[#2d2d2d] text-white placeholder:text-gray-500'
-                      : 'bg-slate-50 border-slate-300 text-slate-900 placeholder:text-slate-400'
+          {/* Quick Format Preset Selectors */}
+          <div className="flex flex-wrap items-center gap-1.5 mb-3">
+            <span className={`text-xs font-medium flex items-center gap-1 mr-1 ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
+              <SlidersHorizontal className="w-3.5 h-3.5 text-[#10b981]" />
+              <span>Format Preset:</span>
+            </span>
+
+            {[
+              { id: 'auto' as FormatPreset, label: 'Auto (Best Video)', desc: 'Best Available' },
+              { id: '1080p' as FormatPreset, label: '1080p FHD', desc: '1080p Standard' },
+              { id: '720p' as FormatPreset, label: '720p HD', desc: 'Fast Balanced' },
+              { id: 'mp3' as FormatPreset, label: 'MP3 Audio (320k)', desc: 'Audio Only' }
+            ].map((p) => {
+              const active = formatPreset === p.id;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setFormatPreset(p.id)}
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-mono font-medium transition-all cursor-pointer border ${
+                    active
+                      ? 'bg-[#10b981]/15 border-[#10b981] text-[#10b981] shadow-xs'
+                      : isDark
+                      ? 'bg-[#1e1e1e] border-[#2d2d2d] text-gray-400 hover:text-gray-200 hover:bg-[#282828]'
+                      : 'bg-slate-100 border-slate-200 text-slate-600 hover:text-slate-800 hover:bg-slate-200'
                   }`}
-                />
-              ) : (
-                <div className="relative">
-                  <input
-                    ref={inputRef as React.RefObject<HTMLInputElement>}
-                    type="text"
+                >
+                  {active && <Check className="w-3 h-3 text-[#10b981]" />}
+                  <span>{p.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Drag Overlay visual indicator */}
+          {isDraggingFile && (
+            <div className="p-6 mb-3 rounded-lg border-2 border-dashed border-[#10b981] bg-[#10b981]/10 flex flex-col items-center justify-center text-center">
+              <Upload className="w-8 h-8 text-[#10b981] animate-bounce mb-2" />
+              <p className="text-sm font-semibold text-[#10b981]">Drop file to import URLs</p>
+              <p className="text-xs text-gray-400 mt-0.5">Supports .txt, .m3u, or text files with one link per line</p>
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} className="space-y-3">
+            <div className="flex flex-col sm:flex-row gap-3">
+              <div className="relative flex-1">
+                {isBatchMode ? (
+                  <textarea
+                    rows={4}
                     value={urlInput}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      // Auto-switch to batch mode if multiple lines are pasted
-                      if (val.includes('\n') || val.includes('\r')) {
-                        setIsBatchMode(true);
-                      }
-                      setUrlInput(val);
-                    }}
-                    placeholder="Paste media URL (YouTube, Vimeo, SoundCloud, Bilibili, TikTok)..."
+                    onChange={(e) => setUrlInput(e.target.value)}
+                    placeholder="Paste multiple URLs (one per line, up to 25 links)&#10;https://www.youtube.com/watch?v=...&#10;https://vimeo.com/...&#10;Or drop a .txt/.m3u file here!"
                     disabled={loading}
-                    className={`w-full px-4 py-2.5 pr-8 rounded-lg border font-mono text-sm focus:outline-none focus:border-[#10b981] focus:ring-1 focus:ring-[#10b981] transition-all ${
+                    className={`w-full px-4 py-2.5 rounded-lg border font-mono text-sm focus:outline-none focus:border-[#10b981] focus:ring-1 focus:ring-[#10b981] transition-all resize-y ${
                       isDark
                         ? 'bg-[#1e1e1e] border-[#2d2d2d] text-white placeholder:text-gray-500'
                         : 'bg-slate-50 border-slate-300 text-slate-900 placeholder:text-slate-400'
                     }`}
                   />
-                  {urlInput && !loading && (
+                ) : (
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={urlInput}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val.includes('\n') || val.includes('\r')) {
+                          setIsBatchMode(true);
+                        }
+                        setUrlInput(val);
+                      }}
+                      placeholder="Paste media URL (YouTube, Vimeo, SoundCloud, Bilibili, TikTok)..."
+                      disabled={loading}
+                      className={`w-full px-4 py-2.5 pr-8 rounded-lg border font-mono text-sm focus:outline-none focus:border-[#10b981] focus:ring-1 focus:ring-[#10b981] transition-all ${
+                        isDark
+                          ? 'bg-[#1e1e1e] border-[#2d2d2d] text-white placeholder:text-gray-500'
+                          : 'bg-slate-50 border-slate-300 text-slate-900 placeholder:text-slate-400'
+                      }`}
+                    />
+                    {urlInput && !loading && (
+                      <button
+                        type="button"
+                        onClick={() => setUrlInput('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-200 cursor-pointer p-0.5"
+                        title="Clear input"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading || !urlInput.trim()}
+                className="flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg bg-[#10b981] hover:bg-[#059669] text-white font-semibold text-sm shadow-md shadow-[#10b981]/20 disabled:opacity-50 transition-all cursor-pointer shrink-0 self-stretch sm:self-auto min-h-[42px]"
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>{isBatchMode && detectedUrls.length > 1 ? `Extracting (${detectedUrls.length})...` : 'Fetching Info...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-4 h-4" />
+                    <span>
+                      {isBatchMode && detectedUrls.length > 1
+                        ? `Queue ${detectedUrls.length} URLs`
+                        : 'Add to Queue'}
+                    </span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* Quick test links */}
+            <div className={`flex flex-wrap items-center gap-2 pt-1 text-xs ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
+              <span className={`flex items-center gap-1 font-medium ${isDark ? 'text-gray-400' : 'text-slate-600'}`}>
+                <Sparkles className="w-3.5 h-3.5 text-[#10b981]" /> Quick test URLs:
+              </span>
+              {sampleLinks.map((sample) => (
+                <button
+                  key={sample.label}
+                  type="button"
+                  onClick={() => {
+                    setUrlInput(sample.url);
+                    setIsBatchMode(false);
+                  }}
+                  className={`px-2.5 py-1 rounded-md text-xs transition-colors cursor-pointer border ${
+                    isDark
+                      ? 'bg-[#1e1e1e] hover:bg-[#282828] border-[#2d2d2d] text-gray-300 hover:text-white'
+                      : 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700 hover:text-slate-900'
+                  }`}
+                >
+                  {sample.label}
+                </button>
+              ))}
+            </div>
+          </form>
+
+          {/* Actionable Error & Feedback Notice */}
+          {feedback && (
+            <div
+              className={`mt-4 p-4 rounded-lg border text-sm transition-all animate-fadeIn ${
+                feedback.type === 'success'
+                  ? 'bg-[#10b981]/15 border-[#10b981]/30 text-[#10b981]'
+                  : feedback.type === 'warning'
+                  ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                  : 'bg-red-500/10 border-red-500/30 text-red-400'
+              }`}
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-start gap-3 min-w-0">
+                  {feedback.type === 'success' ? (
+                    <CheckCircle className="w-5 h-5 shrink-0 mt-0.5 text-[#10b981]" />
+                  ) : feedback.type === 'warning' ? (
+                    <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-amber-400" />
+                  ) : (
+                    <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-red-500" />
+                  )}
+                  <div className="min-w-0">
+                    <p className="font-semibold text-sm leading-tight">
+                      {feedback.title}
+                    </p>
+                    <p className={`text-xs mt-1 break-words ${
+                      feedback.type === 'success'
+                        ? 'text-[#10b981]/90'
+                        : feedback.type === 'warning'
+                        ? 'text-amber-300/90'
+                        : isDark
+                        ? 'text-gray-300'
+                        : 'text-slate-700'
+                    }`}>
+                      {feedback.message}
+                    </p>
+                    {feedback.suggestion && (
+                      <p className="text-[11px] mt-1 text-gray-400 italic">
+                        Tip: {feedback.suggestion}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                  {feedback.fallbackAction && (
                     <button
                       type="button"
-                      onClick={() => setUrlInput('')}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-200 cursor-pointer p-0.5"
-                      title="Clear input"
+                      onClick={feedback.fallbackAction.action}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-[#10b981] hover:bg-[#059669] text-white transition-colors cursor-pointer shadow-xs"
                     >
-                      <X className="w-3.5 h-3.5" />
+                      <RefreshCw className="w-3 h-3" />
+                      <span>{feedback.fallbackAction.label}</span>
                     </button>
                   )}
-                </div>
-              )}
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading || !urlInput.trim()}
-              className="flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg bg-[#10b981] hover:bg-[#059669] text-white font-semibold text-sm shadow-md shadow-[#10b981]/20 disabled:opacity-50 transition-all cursor-pointer shrink-0 self-stretch sm:self-auto min-h-[42px]"
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>{isBatchMode && detectedUrls.length > 1 ? `Extracting (${detectedUrls.length})...` : 'Fetching Info...'}</span>
-                </>
-              ) : (
-                <>
-                  <Download className="w-4 h-4" />
-                  <span>
-                    {isBatchMode && detectedUrls.length > 1
-                      ? `Queue ${detectedUrls.length} URLs`
-                      : 'Add to Queue'}
-                  </span>
-                </>
-              )}
-            </button>
-          </div>
-
-          {/* Quick test links */}
-          <div className={`flex flex-wrap items-center gap-2 pt-1 text-xs ${isDark ? 'text-gray-400' : 'text-slate-500'}`}>
-            <span className={`flex items-center gap-1 font-medium ${isDark ? 'text-gray-400' : 'text-slate-600'}`}>
-              <Sparkles className="w-3.5 h-3.5 text-[#10b981]" /> Quick test URLs:
-            </span>
-            {sampleLinks.map((sample) => (
-              <button
-                key={sample.label}
-                type="button"
-                onClick={() => {
-                  setUrlInput(sample.url);
-                  setIsBatchMode(false);
-                }}
-                className={`px-2.5 py-1 rounded-md text-xs transition-colors cursor-pointer border ${
-                  isDark
-                    ? 'bg-[#1e1e1e] hover:bg-[#282828] border-[#2d2d2d] text-gray-300 hover:text-white'
-                    : 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700 hover:text-slate-900'
-                }`}
-              >
-                {sample.label}
-              </button>
-            ))}
-          </div>
-        </form>
-
-        {/* Actionable Error & Feedback Notice */}
-        {feedback && (
-          <div
-            className={`mt-4 p-4 rounded-lg border text-sm transition-all animate-fadeIn ${
-              feedback.type === 'success'
-                ? 'bg-[#10b981]/15 border-[#10b981]/30 text-[#10b981]'
-                : feedback.type === 'warning'
-                ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
-                : 'bg-red-500/10 border-red-500/30 text-red-400'
-            }`}
-          >
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="flex items-start gap-3 min-w-0">
-                {feedback.type === 'success' ? (
-                  <CheckCircle className="w-5 h-5 shrink-0 mt-0.5 text-[#10b981]" />
-                ) : feedback.type === 'warning' ? (
-                  <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-amber-400" />
-                ) : (
-                  <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-red-500" />
-                )}
-                <div className="min-w-0">
-                  <p className="font-semibold text-sm leading-tight">
-                    {feedback.title}
-                  </p>
-                  <p className={`text-xs mt-1 break-words ${
-                    feedback.type === 'success'
-                      ? 'text-[#10b981]/90'
-                      : feedback.type === 'warning'
-                      ? 'text-amber-300/90'
-                      : isDark
-                      ? 'text-gray-300'
-                      : 'text-slate-700'
-                  }`}>
-                    {feedback.message}
-                  </p>
-                  {feedback.suggestion && (
-                    <p className="text-[11px] mt-1 text-gray-400 italic">
-                      Tip: {feedback.suggestion}
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-                {feedback.fallbackAction && (
                   <button
                     type="button"
-                    onClick={feedback.fallbackAction.action}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-[#10b981] hover:bg-[#059669] text-white transition-colors cursor-pointer shadow-xs"
+                    onClick={() => setFeedback(null)}
+                    className="px-2.5 py-1.5 text-xs font-medium text-gray-400 hover:text-white hover:bg-white/10 rounded transition-colors cursor-pointer"
                   >
-                    <RefreshCw className="w-3 h-3" />
-                    <span>{feedback.fallbackAction.label}</span>
+                    Dismiss
                   </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setFeedback(null)}
-                  className="px-2.5 py-1.5 text-xs font-medium text-gray-400 hover:text-white hover:bg-white/10 rounded transition-colors cursor-pointer"
-                >
-                  Dismiss
-                </button>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </SurfaceCard>
 
       {/* Live Active Transfer Widget (Condition: Any task currently downloading) */}

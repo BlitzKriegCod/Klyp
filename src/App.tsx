@@ -13,6 +13,7 @@ import { BatchCompareDialog } from './components/BatchCompareDialog';
 import { SeriesDialog } from './components/SeriesDialog';
 import { PlatformHealthModal } from './components/PlatformHealthModal';
 import { MediaPlayerModal } from './components/MediaPlayerModal';
+import { MusicPlayerBar } from './components/music/MusicPlayerBar';
 import { DownloadTask, DownloadHistory, AppSettings, SearchResult, VideoInfo, MusicTrack } from './types';
 import { loadSettings, saveSettings } from './controllers/settingsController';
 import { loadHistory, saveHistory, addToHistory, removeFromHistory, clearAllHistory } from './controllers/historyController';
@@ -108,6 +109,117 @@ export const App: React.FC = () => {
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 4000);
+  };
+
+  // Persistent Music Streaming Player State
+  const [musicPlayback, setMusicPlayback] = useState<{
+    currentTrack: MusicTrack | null;
+    queue: MusicTrack[];
+    currentIndex: number;
+    isPlaying: boolean;
+  }>({
+    currentTrack: null,
+    queue: [],
+    currentIndex: -1,
+    isPlaying: false
+  });
+
+  const handlePlayMusicTrack = (track: MusicTrack) => {
+    if (musicPlayback.currentTrack?.id === track.id) {
+      setMusicPlayback((prev) => ({ ...prev, isPlaying: !prev.isPlaying }));
+      return;
+    }
+
+    const existingIdx = musicPlayback.queue.findIndex((t) => t.id === track.id);
+    if (existingIdx !== -1) {
+      setMusicPlayback((prev) => ({
+        ...prev,
+        currentTrack: track,
+        currentIndex: existingIdx,
+        isPlaying: true
+      }));
+    } else {
+      setMusicPlayback((prev) => ({
+        ...prev,
+        currentTrack: track,
+        queue: [track, ...prev.queue],
+        currentIndex: 0,
+        isPlaying: true
+      }));
+    }
+    showToast(`Streaming "${track.title}" by ${track.artist}`);
+  };
+
+  const handlePlayAlbum = (tracks: MusicTrack[], startIndex: number = 0) => {
+    if (!tracks || tracks.length === 0) return;
+    const safeIndex = Math.min(Math.max(0, startIndex), tracks.length - 1);
+    setMusicPlayback({
+      currentTrack: tracks[safeIndex],
+      queue: tracks,
+      currentIndex: safeIndex,
+      isPlaying: true
+    });
+    showToast(`Streaming ${tracks.length} tracks starting with "${tracks[safeIndex].title}"`);
+  };
+
+  const handleToggleMusicPlay = () => {
+    setMusicPlayback((prev) => ({ ...prev, isPlaying: !prev.isPlaying }));
+  };
+
+  const handleNextMusicTrack = () => {
+    setMusicPlayback((prev) => {
+      if (prev.queue.length === 0) return prev;
+      const nextIdx = (prev.currentIndex + 1) % prev.queue.length;
+      return {
+        ...prev,
+        currentIndex: nextIdx,
+        currentTrack: prev.queue[nextIdx],
+        isPlaying: true
+      };
+    });
+  };
+
+  const handlePrevMusicTrack = () => {
+    setMusicPlayback((prev) => {
+      if (prev.queue.length === 0) return prev;
+      const prevIdx = prev.currentIndex <= 0 ? prev.queue.length - 1 : prev.currentIndex - 1;
+      return {
+        ...prev,
+        currentIndex: prevIdx,
+        currentTrack: prev.queue[prevIdx],
+        isPlaying: true
+      };
+    });
+  };
+
+  const handleSelectMusicQueueIndex = (index: number) => {
+    setMusicPlayback((prev) => {
+      if (index < 0 || index >= prev.queue.length) return prev;
+      return {
+        ...prev,
+        currentIndex: index,
+        currentTrack: prev.queue[index],
+        isPlaying: true
+      };
+    });
+  };
+
+  const handleClearMusicQueue = () => {
+    setMusicPlayback({
+      currentTrack: null,
+      queue: [],
+      currentIndex: -1,
+      isPlaying: false
+    });
+    showToast('Playback queue cleared');
+  };
+
+  const handleCloseMusicPlayer = () => {
+    setMusicPlayback((prev) => ({
+      ...prev,
+      isPlaying: false,
+      currentTrack: null
+    }));
   };
 
   // Helper to trigger server-side yt-dlp execution
@@ -333,7 +445,7 @@ export const App: React.FC = () => {
   }, [queue, settings]);
 
   // URL extraction & quality / series dialog trigger
-  const handleAddUrlToQueue = async (url: string) => {
+  const handleAddUrlToQueue = async (url: string, qualityPreset?: string) => {
     const res = await fetch('/api/extract', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -344,6 +456,42 @@ export const App: React.FC = () => {
       throw new Error(errData.error || 'Unable to extract media metadata');
     }
     const info: VideoInfo = await res.json();
+
+    // If a quick quality preset was requested and it's not a multi-entry playlist, queue directly
+    if (qualityPreset && qualityPreset !== 'auto' && (!info.is_playlist || !info.entries || info.entries.length <= 1)) {
+      let resolvedQuality = info.selected_quality || '1080p';
+      let isAudio = false;
+      let audioFmt: string | undefined;
+
+      if (qualityPreset === 'mp3') {
+        resolvedQuality = 'Audio (MP3)';
+        isAudio = true;
+        audioFmt = 'mp3';
+      } else if (qualityPreset === '1080p') {
+        resolvedQuality = '1080p';
+      } else if (qualityPreset === '720p') {
+        resolvedQuality = '720p';
+      }
+
+      const newTask: DownloadTask = {
+        id: `task-${Date.now()}`,
+        video_info: {
+          ...info,
+          selected_quality: resolvedQuality,
+          download_subtitles: false,
+          is_music: isAudio,
+          audio_format: (audioFmt as any) || undefined
+        },
+        status: 'queued',
+        progress: 0,
+        download_path: `${settings.download_directory}/${(info.title || 'media').replace(/[^a-zA-Z0-9_-]/g, '_')}.${audioFmt || 'mp4'}`,
+        created_at: new Date().toISOString()
+      };
+
+      setQueue((prev) => [newTask, ...prev]);
+      showToast(`Added "${info.title}" (${resolvedQuality}) directly to queue!`);
+      return;
+    }
 
     // If it's a playlist or series with multiple entries, open the series / playlist selector
     if (info.is_playlist && info.entries && info.entries.length > 1) {
@@ -373,7 +521,7 @@ export const App: React.FC = () => {
   };
 
   // Batch URLs extraction and auto-enqueue
-  const handleBatchAddUrlsToQueue = async (urls: string[]): Promise<{ success: number; failed: number; errors?: { url: string; error: string }[] }> => {
+  const handleBatchAddUrlsToQueue = async (urls: string[], qualityPreset?: string): Promise<{ success: number; failed: number; errors?: { url: string; error: string }[] }> => {
     const cleanUrls = urls
       .map((u) => u.trim())
       .filter((u) => u.startsWith('http://') || u.startsWith('https://'));
@@ -397,18 +545,30 @@ export const App: React.FC = () => {
     const results: VideoInfo[] = data.results || [];
 
     if (results.length > 0) {
-      const newTasks: DownloadTask[] = results.map((info, idx) => ({
-        id: `task-batch-${Date.now()}-${idx}`,
-        video_info: {
-          ...info,
-          selected_quality: info.selected_quality || '1080p',
-          download_subtitles: false
-        },
-        status: 'queued',
-        progress: 0,
-        download_path: `${settings.download_directory}/${(info.title || `media_${Date.now()}_${idx}`).replace(/[^a-zA-Z0-9_-]/g, '_')}.mp4`,
-        created_at: new Date().toISOString()
-      }));
+      let isAudio = qualityPreset === 'mp3';
+      let extension = isAudio ? 'mp3' : 'mp4';
+
+      const newTasks: DownloadTask[] = results.map((info, idx) => {
+        let q = info.selected_quality || '1080p';
+        if (qualityPreset === 'mp3') q = 'Audio (MP3)';
+        else if (qualityPreset === '1080p') q = '1080p';
+        else if (qualityPreset === '720p') q = '720p';
+
+        return {
+          id: `task-batch-${Date.now()}-${idx}`,
+          video_info: {
+            ...info,
+            selected_quality: q,
+            download_subtitles: false,
+            is_music: isAudio,
+            audio_format: isAudio ? 'mp3' : undefined
+          },
+          status: 'queued',
+          progress: 0,
+          download_path: `${settings.download_directory}/${(info.title || `media_${Date.now()}_${idx}`).replace(/[^a-zA-Z0-9_-]/g, '_')}.${extension}`,
+          created_at: new Date().toISOString()
+        };
+      });
 
       setQueue((prev) => [...newTasks, ...prev]);
       showToast(`Added ${results.length} batch items to download queue!`);
@@ -463,8 +623,41 @@ export const App: React.FC = () => {
     setQualityDialog({ open: true, videoInfo });
   };
 
+  const handleSearchAddBatchToQueue = (items: SearchResult[]) => {
+    if (items.length === 0) return;
+    const newTasks: DownloadTask[] = items.map((item, idx) => ({
+      id: `task-search-${Date.now()}-${idx}`,
+      video_info: {
+        url: item.url,
+        title: item.title,
+        thumbnail: item.thumbnail,
+        duration: item.duration,
+        author: item.author,
+        available_qualities: item.available_qualities || ['1080p', '720p', 'Audio Only (MP3)'],
+        selected_quality: '1080p',
+        download_subtitles: false,
+        platform: item.platform
+      },
+      status: 'queued',
+      progress: 0,
+      download_path: `${settings.download_directory}/${(item.title || `search_item_${idx}`).replace(/[^a-zA-Z0-9_-]/g, '_')}.mp4`,
+      created_at: new Date().toISOString()
+    }));
+
+    setQueue((prev) => [...newTasks, ...prev]);
+    showToast(`Added ${items.length} items to download queue!`);
+  };
+
   // From Series Dialog
-  const handleAddEpisodesToQueue = (episodes: { title: string; episodeNumber: number; url: string; duration?: string; thumbnail?: string; author?: string }[]) => {
+  // From Series / Media Package Dialog
+  const handleAddEpisodesToQueue = (
+    episodes: { title: string; episodeNumber: number; url: string; duration?: string; thumbnail?: string; author?: string }[],
+    quality?: string
+  ) => {
+    const selectedQuality = quality || '1080p';
+    const isAudio = selectedQuality.toLowerCase().includes('audio') || selectedQuality.toLowerCase().includes('mp3');
+    const ext = isAudio ? 'mp3' : 'mp4';
+
     const newTasks: DownloadTask[] = episodes.map((ep, idx) => ({
       id: `task-ep-${Date.now()}-${idx}`,
       video_info: {
@@ -472,20 +665,20 @@ export const App: React.FC = () => {
         title: ep.title,
         thumbnail: ep.thumbnail || '',
         duration: ep.duration || 'Unknown',
-        author: ep.author || 'Series Channel',
-        available_qualities: ['1080p', '720p', 'Audio Only (MP3)'],
-        selected_quality: '1080p',
+        author: ep.author || 'Streaming Media',
+        available_qualities: ['1080p', '720p', '480p', 'Audio Only (MP3)'],
+        selected_quality: selectedQuality,
         download_subtitles: false,
         platform: 'Streaming'
       },
       status: 'queued',
       progress: 0,
-      download_path: `${settings.download_directory}/${ep.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.mp4`,
+      download_path: `${settings.download_directory}/${ep.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.${ext}`,
       created_at: new Date().toISOString()
     }));
 
     setQueue((prev) => [...prev, ...newTasks]);
-    showToast(`Queued ${episodes.length} items to download!`);
+    showToast(`Queued ${episodes.length} items (${selectedQuality}) to download!`);
   };
 
   // Queue Operations
@@ -618,12 +811,18 @@ export const App: React.FC = () => {
             theme={settings.theme}
             onQueueBatchTracks={handleQueueBatchMusicTracks}
             showToast={showToast}
+            onPlayTrack={handlePlayMusicTrack}
+            onPlayAlbum={handlePlayAlbum}
+            currentPlayingTrackId={musicPlayback.currentTrack?.id || null}
+            isPlayingGlobal={musicPlayback.isPlaying}
           />
         )}
 
         {currentScreen === 'search' && (
           <SearchScreen
             onAddToQueue={handleSearchAddToQueue}
+            onAddBatchToQueue={handleSearchAddBatchToQueue}
+            onAddDirectUrl={handleAddUrlToQueue}
             onOpenCompare={(items) => setCompareDialog({ open: true, items })}
             onOpenSeries={(item) => setSeriesDialog({ open: true, item })}
             onPreviewMedia={(title, url, thumb) =>
@@ -717,13 +916,16 @@ export const App: React.FC = () => {
         theme={settings.theme}
       />
 
-      {/* Series Detection Dialog */}
+      {/* Series / Media Package Dialog */}
       {seriesDialog.item && (
         <SeriesDialog
           isOpen={seriesDialog.open}
           item={seriesDialog.item}
           onClose={() => setSeriesDialog({ open: false, item: null })}
           onAddEpisodes={handleAddEpisodesToQueue}
+          onPreviewMedia={(title, url, thumb) =>
+            setMediaPlayer({ open: true, title, url, thumb })
+          }
           theme={settings.theme}
         />
       )}
@@ -743,6 +945,24 @@ export const App: React.FC = () => {
         mediaUrl={mediaPlayer.url}
         thumbnailUrl={mediaPlayer.thumb}
         theme={settings.theme}
+      />
+
+      {/* Persistent Bottom Music Streaming Player Bar */}
+      <MusicPlayerBar
+        currentTrack={musicPlayback.currentTrack}
+        queue={musicPlayback.queue}
+        currentIndex={musicPlayback.currentIndex}
+        isPlaying={musicPlayback.isPlaying}
+        theme={settings.theme}
+        onTogglePlay={handleToggleMusicPlay}
+        onNextTrack={handleNextMusicTrack}
+        onPrevTrack={handlePrevMusicTrack}
+        onSelectQueueIndex={handleSelectMusicQueueIndex}
+        onClearQueue={handleClearMusicQueue}
+        onClosePlayer={handleCloseMusicPlayer}
+        onDownloadTrack={(track) => handleQueueBatchMusicTracks([track], 'mp3', '320kbps')}
+        onDownloadAllInQueue={(tracks) => handleQueueBatchMusicTracks(tracks, 'mp3', '320kbps')}
+        showToast={showToast}
       />
 
       {/* Mobile Floating Navigation Bar */}

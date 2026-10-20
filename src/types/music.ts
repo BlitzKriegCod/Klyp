@@ -82,3 +82,31 @@ export interface MusicBatchDownloadRequest {
     previewUrl?: string;
   }>;
 }
+
+export interface MusicStreamResolution {
+  source: 'local' | 'stream' | 'preview' | 'sample';
+  streamUrl: string;
+  title: string;
+  artist: string;
+  album?: string;
+  isFullAudio: boolean;
+  isLocal?: boolean;
+}
+
+export interface MusicPlaybackState {
+  currentTrack: MusicTrack | null;
+  queue: MusicTrack[];
+  currentIndex: number;
+  isPlaying: boolean;
+  isShuffle: boolean;
+  repeatMode: 'off' | 'all' | 'one';
+  volume: number;
+  isMuted: boolean;
+  currentTime: number;
+  duration: number;
+  activeStreamUrl: string | null;
+  isFullAudio: boolean;
+  isResolving: boolean;
+  error: string | null;
+}
+
