@@ -3,6 +3,10 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
     "dev": "tsx server.ts",
     "build": "tsc && vite build",
@@ -26,6 +30,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "tailwindcss": "^4.0.9",
     "tsx": "^4.19.3",
+    "turbo": "^2.11.9",
     "typescript": "^5.7.3",
     "vite": "^6.2.0"
   }
